@@ -5,10 +5,11 @@ export class ManifestLoader {
   static async load(
     { manifestPath }: { manifestPath: string },
   ) {
-    const manifest_module = await import("./src/jobs/main.ts").catch(
+    const jobsPath = new URL("src/jobs/main.ts", `file://${Deno.cwd()}/`).href;
+    const manifest_module = await import(jobsPath).catch(
       this.handle_error_not_found,
     );
-    this.validate_manifest_module(manifest_module, manifestPath);
+    this.validate_manifest_module(manifest_module, "./src/jobs/main.ts");
 
     const manifest = manifest_module.default || manifest_module.jobs;
     this.validate_manifest_type(manifest, manifestPath);
