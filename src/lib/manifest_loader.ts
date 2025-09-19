@@ -3,7 +3,12 @@ import { JobManifest } from "./types.ts";
 export class ManifestLoader {
   static async loadFromModule(moduleSpecifier: string): Promise<JobManifest> {
     try {
-      const module = await import(moduleSpecifier);
+      // Convert relative paths to absolute file URLs
+      const resolvedSpecifier = moduleSpecifier.startsWith('.') 
+        ? new URL(moduleSpecifier, `file://${Deno.cwd()}/`).href
+        : moduleSpecifier;
+      
+      const module = await import(resolvedSpecifier);
 
       if (!module.default && !module.jobs) {
         throw new Error(
