@@ -152,11 +152,22 @@ Events include: `job_received`, `job_started`, `job_succeeded`, `job_failed`, `j
 
 ## Deno Permissions
 
-Required permissions for Deno Deploy:
+Required permissions:
 
 ```bash
-deno run --allow-read --allow-write worker.ts
+# For local development (Deno KV uses unstable flag)
+deno run --unstable-kv worker.ts
+
+# For Deno Deploy (KV is stable, no additional permissions needed)
+deno run worker.ts
 ```
+
+**No file system permissions required!** The library only uses:
+- **Deno KV**: Built-in key-value store (no file system access)
+- **Dynamic imports**: For loading job manifests (allowed by default)
+- **Standard APIs**: Logging, timers, signals (no special permissions)
+
+> **Note**: On Deno Deploy, KV is stable and no `--unstable-kv` flag is needed. The `--allow-read` and `--allow-write` permissions mentioned in the original requirements are **not necessary** for this library.
 
 ## API Reference
 

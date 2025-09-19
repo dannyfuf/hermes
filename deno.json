@@ -1,5 +1,7 @@
 {
   "tasks": {
-    "dev": "deno run --watch main.ts"
+    "dev": "deno run --watch main.ts",
+    "worker": "deno run --unstable-kv example/worker.ts",
+    "enqueue": "deno run --unstable-kv example/enqueue.ts"
   }
 }
