@@ -8,7 +8,7 @@ export abstract class Job {
 
   abstract perform(job_body: unknown): Promise<unknown>;
 
-  async perform_later(job_body: unknown, opts: PerformLaterOptions = {}) {
+  async perform_later(job_body?: unknown, opts: PerformLaterOptions = {}) {
     const kv = await Deno.openKv();
     const payload: JobPayload = {
       job_name: this.job_name,
