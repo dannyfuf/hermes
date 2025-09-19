@@ -5,10 +5,11 @@
     "enqueue": "deno run --unstable-kv example/enqueue.ts"
   },
   "imports": {
-    "@std/path": "jsr:@std/path@1"
+    "@std/path": "jsr:@std/path@^1.1.2"
+    "@hermes": "./src/main.ts"
   },
   "name": "@dafu/hermes",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "license": "MIT",
   "exports": "./src/main.ts",
 }
