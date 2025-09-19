@@ -5,7 +5,7 @@
     "enqueue": "deno run --unstable-kv example/enqueue.ts"
   },
   "name": "@dafu/hermes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "exports": "./src/main.ts",
 }
