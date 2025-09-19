@@ -10,19 +10,15 @@ export type JobPayload = {
 };
 
 export type WorkerConfig = {
-  includeQueues?: string[];
-  excludeQueues?: string[];
-  concurrency?: number;
   gracefulShutdownTimeout?: number;
 };
 
-export type JobManifest = Array<new () => Job>;
+export type HermesParams = {
+  manifest: string;
+  worker: WorkerConfig;
+};
 
-export type JobConstructor = new () => Job;
-
-export interface Job {
-  readonly job_name: string;
-  readonly queue_name: string;
-  perform(job_body: unknown): Promise<unknown>;
-  perform_later(job_body: unknown, opts?: PerformLaterOptions): Promise<void>;
-}
+export type WorkerParams = {
+  // deno-lint-ignore no-explicit-any
+  jobs_hash: Map<string, any>;
+};

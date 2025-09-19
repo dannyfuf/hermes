@@ -1,4 +1,4 @@
-import { JobPayload, PerformLaterOptions } from "./types.ts";
+import type { JobPayload, PerformLaterOptions } from "./types.ts";
 
 export abstract class Job {
   abstract readonly job_name: string;
