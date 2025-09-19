@@ -1,5 +1,5 @@
-import { join } from "jsr:@std/path";
-import { toFileUrl } from "jsr:@std/path";
+import { join } from "@std/path";
+import { toFileUrl } from "@std/path";
 
 export class ManifestLoader {
   static async load(
