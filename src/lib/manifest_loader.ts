@@ -1,8 +1,12 @@
+import { join } from "jsr:@std/path";
+import { toFileUrl } from "jsr:@std/path";
+
 export class ManifestLoader {
   static async load(
     { manifestPath }: { manifestPath: string },
   ) {
-    const manifest_module = await import(manifestPath).catch(
+    const resolvedPath = this.resolvePath(manifestPath);
+    const manifest_module = await import(resolvedPath).catch(
       this.handle_error_not_found,
     );
     this.validate_manifest_module(manifest_module, manifestPath);
@@ -35,6 +39,25 @@ export class ManifestLoader {
           `must export an array of Job classes. Got: ${typeof manifest}`,
       );
     }
+  }
+
+  private static resolvePath(manifestPath: string): string {
+    if (
+      manifestPath.startsWith("http://") ||
+      manifestPath.startsWith("https://") || manifestPath.startsWith("file://")
+    ) {
+      return manifestPath;
+    }
+
+    if (
+      manifestPath.startsWith("./") || manifestPath.startsWith("../") ||
+      !manifestPath.startsWith("/")
+    ) {
+      const absolutePath = join(Deno.cwd(), manifestPath);
+      return toFileUrl(absolutePath).href;
+    }
+
+    return toFileUrl(manifestPath).href;
   }
 
   private static handle_error_not_found(error: Error) {

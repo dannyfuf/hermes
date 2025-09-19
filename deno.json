@@ -4,8 +4,11 @@
     "worker": "deno run --unstable-kv example/worker.ts",
     "enqueue": "deno run --unstable-kv example/enqueue.ts"
   },
+  "imports": {
+    "@std/path": "jsr:@std/path@1"
+  },
   "name": "@dafu/hermes",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "exports": "./src/main.ts",
 }
