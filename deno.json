@@ -9,7 +9,7 @@
     "@hermes": "./src/main.ts"
   },
   "name": "@dafu/hermes",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "license": "MIT",
   "exports": "./src/main.ts",
 }

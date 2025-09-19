@@ -5,8 +5,7 @@ export class ManifestLoader {
   static async load(
     { manifestPath }: { manifestPath: string },
   ) {
-    const resolvedPath = this.resolvePath(manifestPath);
-    const manifest_module = await import(resolvedPath).catch(
+    const manifest_module = await import("./src/jobs/main.ts").catch(
       this.handle_error_not_found,
     );
     this.validate_manifest_module(manifest_module, manifestPath);
