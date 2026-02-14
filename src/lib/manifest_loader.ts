@@ -5,23 +5,23 @@ export class ManifestLoader {
   static async load(
     { manifestPath }: { manifestPath: string },
   ) {
-    const jobsPath = new URL("src/jobs/main.ts", `file://${Deno.cwd()}/`).href;
-    const manifest_module = await import(jobsPath).catch(
-      this.handle_error_not_found,
+    const resolved = this.resolvePath(manifestPath);
+    const manifestModule = await import(resolved).catch(
+      (error) => this.handleErrorNotFound(error, manifestPath),
     );
-    this.validate_manifest_module(manifest_module, "./src/jobs/main.ts");
+    this.validateManifestModule(manifestModule, manifestPath);
 
-    const manifest = manifest_module.default || manifest_module.jobs;
-    this.validate_manifest_type(manifest, manifestPath);
+    const manifest = manifestModule.default || manifestModule.jobs;
+    this.validateManifestType(manifest, manifestPath);
 
     return manifest;
   }
 
-  private static validate_manifest_module(
+  private static validateManifestModule(
     // deno-lint-ignore no-explicit-any
     manifestModule: any,
     manifestPath: string,
-  ) {
+  ): void {
     if (!manifestModule.default && !manifestModule.jobs) {
       throw new Error(
         `Job manifest at "${manifestPath}" ` +
@@ -31,8 +31,11 @@ export class ManifestLoader {
     }
   }
 
-  // deno-lint-ignore no-explicit-any
-  private static validate_manifest_type(manifest: any, manifestPath: string) {
+  private static validateManifestType(
+    // deno-lint-ignore no-explicit-any
+    manifest: any,
+    manifestPath: string,
+  ): void {
     if (!Array.isArray(manifest)) {
       throw new Error(
         `Job manifest at "${manifestPath}" ` +
@@ -60,11 +63,14 @@ export class ManifestLoader {
     return toFileUrl(manifestPath).href;
   }
 
-  private static handle_error_not_found(error: Error) {
+  private static handleErrorNotFound(
+    error: Error,
+    manifestPath: string,
+  ): never {
     const errorMessage = error.message;
     if (errorMessage.includes("Module not found")) {
       throw new Error(
-        `Job manifest not found at "${error.message}". ` +
+        `Job manifest not found at "${manifestPath}". ` +
           `Ensure the file exists and exports an array of Job classes.`,
       );
     }

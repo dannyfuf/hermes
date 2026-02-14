@@ -1,8 +1,8 @@
 export interface LogEvent {
   timestamp: string;
   event: string;
-  job_name?: string;
-  queue_name?: string;
+  jobName?: string;
+  queueName?: string;
   error?: string;
   [key: string]: unknown;
 }
@@ -16,8 +16,8 @@ export class Logger {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "job_received",
-      job_name: jobName,
-      queue_name: queueName,
+      jobName,
+      queueName,
     });
   }
 
@@ -25,8 +25,8 @@ export class Logger {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "job_started",
-      job_name: jobName,
-      queue_name: queueName,
+      jobName,
+      queueName,
     });
   }
 
@@ -38,9 +38,9 @@ export class Logger {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "job_succeeded",
-      job_name: jobName,
-      queue_name: queueName,
-      duration_ms: duration,
+      jobName,
+      queueName,
+      durationMs: duration,
     });
   }
 
@@ -53,10 +53,10 @@ export class Logger {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "job_failed",
-      job_name: jobName,
-      queue_name: queueName,
+      jobName,
+      queueName,
       error,
-      duration_ms: duration,
+      durationMs: duration,
     });
   }
 
@@ -64,8 +64,8 @@ export class Logger {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "job_skipped",
-      job_name: jobName,
-      queue_name: queueName,
+      jobName,
+      queueName,
       reason,
     });
   }
@@ -78,8 +78,8 @@ export class Logger {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "unknown_job",
-      job_name: jobName,
-      queue_name: queueName,
+      jobName,
+      queueName,
       payload,
     });
   }
@@ -88,7 +88,7 @@ export class Logger {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "worker_started",
-      registered_jobs: registeredJobs,
+      registeredJobs,
       config,
     });
   }

@@ -1,21 +1,36 @@
-import type { WorkerParams } from "./types.ts";
+import type { JobPayload, WorkerParams } from "./types.ts";
+import { Logger } from "./logger.ts";
 
 export class Worker {
-  static async start({ jobs_hash }: WorkerParams) {
-    const kv = await Deno.openKv();
+  static async start(
+    { jobsMap, backend, queueNames }: WorkerParams,
+  ): Promise<void> {
+    Logger.workerStarted(jobsMap.size, { queueNames });
 
-    kv.listenQueue(async ({ job_name, job_body }) => {
-      const job_class = jobs_hash.get(job_name);
-      this.validateJob(job_class);
+    await backend.listen(async (payload: JobPayload) => {
+      const { jobName, jobBody, queueName } = payload;
+      Logger.jobReceived(jobName, queueName);
 
-      const job = new job_class();
-      await job.perform(job_body);
-    });
-  }
+      const jobClass = jobsMap.get(jobName);
+      if (!jobClass) {
+        Logger.unknownJob(jobName, queueName, payload);
+        return;
+      }
 
-  private static validateJob(job_class?: unknown) {
-    if (!job_class) {
-      throw new Error("Job is not defined");
-    }
+      const start = Date.now();
+      Logger.jobStarted(jobName, queueName);
+
+      try {
+        const job = new jobClass();
+        await job.perform(jobBody);
+        Logger.jobSucceeded(jobName, queueName, Date.now() - start);
+      } catch (error) {
+        const errorMessage = error instanceof Error
+          ? error.message
+          : String(error);
+        Logger.jobFailed(jobName, queueName, errorMessage, Date.now() - start);
+        throw error;
+      }
+    }, { queueNames });
   }
 }

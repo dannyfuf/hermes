@@ -1,21 +1,25 @@
 import type { JobPayload, PerformLaterOptions } from "./types.ts";
+import { getBackend } from "./backend_registry.ts";
 
 export abstract class Job {
-  abstract readonly job_name: string;
-  abstract readonly queue_name: string;
+  abstract readonly jobName: string;
+  abstract readonly queueName: string;
   readonly every?: number;
   readonly cron?: string;
 
-  abstract perform(job_body: unknown): Promise<unknown>;
+  abstract perform(jobBody: unknown): Promise<unknown>;
 
-  async perform_later(job_body?: unknown, opts: PerformLaterOptions = {}) {
-    const kv = await Deno.openKv();
+  async performLater(
+    jobBody?: unknown,
+    opts: PerformLaterOptions = {},
+  ): Promise<void> {
+    const backend = getBackend();
     const payload: JobPayload = {
-      job_name: this.job_name,
-      queue_name: this.queue_name,
-      job_body,
+      jobName: this.jobName,
+      queueName: this.queueName,
+      jobBody,
     };
 
-    await kv.enqueue(payload, { delay: opts.delay });
+    await backend.enqueue(payload, { delay: opts.delay });
   }
 }

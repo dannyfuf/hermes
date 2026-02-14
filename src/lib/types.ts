@@ -1,24 +1,30 @@
+import type { BackendAdapter } from "./backend.ts";
+
 export type PerformLaterOptions = {
   delay?: number;
 };
 
 export type JobPayload = {
-  job_name: string;
-  queue_name: string;
-  job_body: unknown;
+  jobName: string;
+  queueName: string;
+  jobBody: unknown;
   metadata?: Record<string, unknown>;
 };
 
 export type WorkerConfig = {
+  concurrency?: number;
   gracefulShutdownTimeout?: number;
 };
 
 export type HermesParams = {
   manifest: string;
-  worker: WorkerConfig;
+  backend: BackendAdapter;
+  worker?: WorkerConfig;
 };
 
 export type WorkerParams = {
   // deno-lint-ignore no-explicit-any
-  jobs_hash: Map<string, any>;
+  jobsMap: Map<string, any>;
+  backend: BackendAdapter;
+  queueNames?: string[];
 };
