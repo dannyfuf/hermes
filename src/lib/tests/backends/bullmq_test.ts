@@ -1,0 +1,222 @@
+// BullMQ integration tests - require a running Redis instance on localhost:6379
+// These tests are skipped if Redis is not available.
+
+import { assertEquals } from "@std/assert";
+import type { JobPayload } from "../../types.ts";
+
+async function checkRedis(): Promise<boolean> {
+  try {
+    const conn = await Deno.connect({ hostname: "127.0.0.1", port: 6379 });
+    conn.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const redisAvailable = await checkRedis();
+
+// Use unique queue names per test run to avoid cross-run pollution
+const testRunId = crypto.randomUUID().slice(0, 8);
+
+Deno.test({
+  name: "BullMQBackend: enqueue and process a job",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_basic`;
+
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+
+    const processed: JobPayload[] = [];
+
+    const done = new Promise<void>((resolve) => {
+      backend.listen(async (payload: JobPayload) => {
+        processed.push(payload);
+        resolve();
+        await Promise.resolve();
+      }, { queueNames: [queueName] });
+    });
+
+    await backend.enqueue({
+      jobName: "bullmq_test_job",
+      queueName: queueName,
+      jobBody: { test: true },
+    });
+
+    // Wait for the job to be processed (with timeout)
+    let timeoutId: number | undefined;
+    await Promise.race([
+      done,
+      new Promise<void>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error("Timeout waiting for job processing")),
+          10000,
+        ) as unknown as number;
+      }),
+    ]);
+
+    clearTimeout(timeoutId);
+
+    assertEquals(processed.length, 1);
+    assertEquals(processed[0].jobName, "bullmq_test_job");
+    assertEquals(processed[0].jobBody, { test: true });
+
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: enqueues to correct queue based on queueName",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queue1 = `test_bullmq_${testRunId}_q1`;
+    const queue2 = `test_bullmq_${testRunId}_q2`;
+
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+
+    const processedQ1: JobPayload[] = [];
+    const processedQ2: JobPayload[] = [];
+    let resolveQ1: () => void;
+    let resolveQ2: () => void;
+    const doneQ1 = new Promise<void>((r) => resolveQ1 = r);
+    const doneQ2 = new Promise<void>((r) => resolveQ2 = r);
+
+    // Listen on both queues with a single backend but track separately
+    // We need to use listen() which creates workers for both queues
+    backend.listen(async (payload: JobPayload) => {
+      if (payload.queueName === queue1) {
+        processedQ1.push(payload);
+        resolveQ1();
+      } else if (payload.queueName === queue2) {
+        processedQ2.push(payload);
+        resolveQ2();
+      }
+      await Promise.resolve();
+    }, { queueNames: [queue1, queue2] });
+
+    // Enqueue one job to each queue
+    await backend.enqueue({
+      jobName: "job_for_q1",
+      queueName: queue1,
+      jobBody: { queue: 1 },
+    });
+
+    await backend.enqueue({
+      jobName: "job_for_q2",
+      queueName: queue2,
+      jobBody: { queue: 2 },
+    });
+
+    // Wait for both to be processed
+    let timeoutId: number | undefined;
+    await Promise.race([
+      Promise.all([doneQ1, doneQ2]),
+      new Promise<void>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error("Timeout waiting for multi-queue processing")),
+          10000,
+        ) as unknown as number;
+      }),
+    ]);
+    clearTimeout(timeoutId);
+
+    assertEquals(processedQ1.length, 1);
+    assertEquals(processedQ1[0].jobName, "job_for_q1");
+    assertEquals(processedQ2.length, 1);
+    assertEquals(processedQ2[0].jobName, "job_for_q2");
+
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: close() shuts down queues and workers",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_close`;
+
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+
+    // Initialize a queue by enqueueing
+    await backend.enqueue({
+      jobName: "close_test",
+      queueName: queueName,
+      jobBody: null,
+    });
+
+    // Start a worker
+    await backend.listen(async (_payload: JobPayload) => {
+      await Promise.resolve();
+    }, { queueNames: [queueName] });
+
+    // close() should shut down both queues and workers without throwing
+    await backend.close();
+
+    // Calling close() again should be safe (idempotent)
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: uses defaultQueueName when payload has no queueName",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const defaultQueue = `test_bullmq_${testRunId}_default`;
+
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+      defaultQueueName: defaultQueue,
+    });
+
+    const processed: JobPayload[] = [];
+    const done = new Promise<void>((resolve) => {
+      backend.listen(async (payload: JobPayload) => {
+        processed.push(payload);
+        resolve();
+        await Promise.resolve();
+      }, { queueNames: [defaultQueue] });
+    });
+
+    // Enqueue with empty queueName — should route to defaultQueueName
+    await backend.enqueue({
+      jobName: "default_queue_job",
+      queueName: "",
+      jobBody: { default: true },
+    });
+
+    let timeoutId: number | undefined;
+    await Promise.race([
+      done,
+      new Promise<void>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error("Timeout")),
+          10000,
+        ) as unknown as number;
+      }),
+    ]);
+    clearTimeout(timeoutId);
+
+    assertEquals(processed.length, 1);
+    assertEquals(processed[0].jobName, "default_queue_job");
+
+    await backend.close();
+  },
+});
