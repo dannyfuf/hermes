@@ -1,10 +1,10 @@
-import { Hermes } from "@hermes";
+import { DenoKvBackend, Hermes } from "@hermes";
 
 const hermes = Hermes({
   manifest: "./example/jobs/main.ts",
+  backend: DenoKvBackend(),
   worker: { gracefulShutdownTimeout: 1000 },
 });
 
-hermes.start().then(() => {
-  console.log("Hermes is running");
-});
+await hermes.start();
+console.log("Hermes is running (Deno KV backend)");

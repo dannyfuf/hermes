@@ -1,74 +1,104 @@
 # Hermes
 
-A Deno Deploy-compatible jobs library that dispatches enqueued jobs to their corresponding Job classes, with support for multiple queue names.
+A backend-agnostic background job processing library for Deno. Define jobs as
+classes, enqueue them from anywhere, and process them with pluggable backends
+like **Deno KV** or **Redis (BullMQ)**.
 
 ## Features
 
-- **Job Registry**: Automatic loading and validation of job classes from a manifest
-- **Queue Filtering**: Support for multiple queues with include/exclude filtering
-- **Deno KV Integration**: Built-in support for Deno KV as the job queue backend
-- **Graceful Shutdown**: Proper handling of worker lifecycle with configurable timeouts
-- **Structured Logging**: Comprehensive job lifecycle event logging
-- **Type Safety**: Full TypeScript support with proper type definitions
+- **Backend-agnostic**: Swap between Deno KV and Redis/BullMQ (or write your
+  own adapter)
+- **Job classes**: Encapsulate job logic in typed, reusable classes
+- **Manifest-based registration**: Auto-discover jobs from a single manifest
+  file
+- **Delayed jobs**: Schedule jobs to run after a specified delay
+- **Multi-queue support**: Route jobs to different queues and process them
+  independently
+- **Structured logging**: JSON-formatted lifecycle events for every job
+- **Graceful shutdown**: Clean worker shutdown with configurable timeouts
+- **Deno Deploy compatible**: Works out of the box on Deno Deploy with the Deno
+  KV backend
 
-## Quick Start
+## Installation
 
-### 1. Define Your Jobs
+```bash
+# From JSR
+deno add @dafu/hermes
+```
 
-Create job classes that extend the base `Job` class:
+Or import directly in your `deno.json`:
 
-```typescript
-// src/jobs/email_job.ts
-import { Job } from "hermes";
-
-export class EmailJob extends Job {
-  readonly job_name = "send_email";
-  readonly queue_name = "emails";
-
-  async perform(job_body: unknown): Promise<void> {
-    const { to, subject, body } = job_body as {
-      to: string;
-      subject: string;
-      body: string;
-    };
-
-    // Your email sending logic here
-    console.log(`Sending email to ${to}: ${subject}`);
+```json
+{
+  "imports": {
+    "@dafu/hermes": "jsr:@dafu/hermes"
   }
 }
 ```
 
-### 2. Create a Jobs Manifest
+## Quick Start
 
-Export all your job classes from `src/jobs/main.ts`:
+### 1. Define a Job
+
+Create a job class that extends the base `Job` class. Each job must declare a
+unique `jobName` and a `queueName`:
 
 ```typescript
-// src/jobs/main.ts
+// jobs/email_job.ts
+import { Job } from "@dafu/hermes";
+
+interface EmailPayload {
+  to: string;
+  subject: string;
+  body: string;
+}
+
+export class EmailJob extends Job {
+  jobName = "send_email";
+  queueName = "emails";
+
+  async perform(jobBody: unknown): Promise<void> {
+    const { to, subject, body } = jobBody as EmailPayload;
+    console.log(`Sending email to ${to}: ${subject}`);
+    // Your email sending logic here
+  }
+}
+```
+
+### 2. Create a Manifest
+
+Export all your job classes as an array. Hermes supports both `default` and named
+`jobs` exports:
+
+```typescript
+// jobs/main.ts
 import { EmailJob } from "./email_job.ts";
 import { ReportJob } from "./report_job.ts";
 
-export default [
-  EmailJob,
-  ReportJob,
-];
+// Default export
+export default [EmailJob, ReportJob];
+
+// OR named export
+// export const jobs = [EmailJob, ReportJob];
 ```
 
-### 3. Start the Worker
+### 3. Start a Worker
+
+Choose a backend and point the worker at your manifest:
 
 ```typescript
 // worker.ts
-import { createAndStartHermes } from "hermes";
+import { DenoKvBackend, Hermes } from "@dafu/hermes";
 
-const hermes = await createAndStartHermes({
-  manifest: "./src/jobs/main.ts",
-  worker: {
-    includeQueues: ["emails", "reports"],
-    concurrency: 2,
-    gracefulShutdownTimeout: 10000,
-  },
+const hermes = Hermes({
+  manifest: "./jobs/main.ts",
+  backend: DenoKvBackend(),
 });
 
-// Graceful shutdown handling
+await hermes.start();
+console.log("Worker is running");
+
+// Graceful shutdown
 Deno.addSignalListener("SIGINT", async () => {
   await hermes.stop();
   Deno.exit(0);
@@ -77,126 +107,297 @@ Deno.addSignalListener("SIGINT", async () => {
 
 ### 4. Enqueue Jobs
 
+Before enqueueing, you must configure the backend. You can either start a full
+Hermes instance or use `configure()` for enqueue-only processes:
+
 ```typescript
 // enqueue.ts
-import { EmailJob } from "./src/jobs/main.ts";
+import { configure, DenoKvBackend } from "@dafu/hermes";
+import { EmailJob } from "./jobs/email_job.ts";
 
-const emailJob = new EmailJob();
+// Configure the backend (required before calling performLater)
+configure({ backend: DenoKvBackend() });
 
-await emailJob.perform_later({
+const job = new EmailJob();
+await job.performLater({
   to: "user@example.com",
   subject: "Welcome!",
   body: "Thanks for signing up!",
 });
+
+console.log("Job enqueued");
 ```
 
-## Configuration
+## Backends
 
-### HermesConfig
+Hermes ships with two built-in backends. You can also implement the
+`BackendAdapter` interface to create your own.
+
+### Deno KV
+
+Zero-configuration backend using Deno's built-in KV store. Works on Deno Deploy
+out of the box.
 
 ```typescript
-interface HermesConfig {
-  manifest: JobManifest | string;  // Array of Job classes or path to manifest module
-  worker?: WorkerConfig;
-}
+import { DenoKvBackend } from "@dafu/hermes";
+
+// Default (uses Deno's default KV store)
+const backend = DenoKvBackend();
+
+// Custom KV path (local development)
+const backend = DenoKvBackend({ path: "./my-data.sqlite" });
 ```
 
-### WorkerConfig
-
-```typescript
-interface WorkerConfig {
-  includeQueues?: string[];        // Only process these queues
-  excludeQueues?: string[];        // Skip these queues
-  concurrency?: number;            // Max concurrent jobs (default: 1)
-  gracefulShutdownTimeout?: number; // Shutdown timeout in ms (default: 30000)
-}
-```
-
-## Job Payload Schema
-
-All enqueued jobs include:
-
-```typescript
-interface JobPayload {
-  job_name: string;      // Unique identifier for the job type
-  queue_name: string;    // Queue to process the job in
-  job_body: unknown;     // The actual job data
-  metadata?: Record<string, unknown>; // Optional metadata
-}
-```
-
-## Error Handling
-
-The library handles various error scenarios:
-
-- **Duplicate job_name**: Startup fails with clear error
-- **Invalid manifest**: Startup fails with validation errors
-- **Unknown job_name**: Logs error and skips processing
-- **Queue filtering**: Skips jobs not matching worker configuration
-- **Job execution failures**: Logs error details without crashing worker
-
-## Logging
-
-Structured JSON logs are emitted for all job lifecycle events:
-
-```json
-{
-  "timestamp": "2024-01-01T12:00:00.000Z",
-  "event": "job_started",
-  "job_name": "send_email",
-  "queue_name": "emails"
-}
-```
-
-Events include: `job_received`, `job_started`, `job_succeeded`, `job_failed`, `job_skipped`, `unknown_job`, `worker_started`, `worker_stopping`, `worker_stopped`.
-
-## Deno Permissions
-
-Required permissions:
+Run workers with the `--unstable-kv` flag (not needed on Deno Deploy):
 
 ```bash
-# For local development (Deno KV uses unstable flag)
 deno run --unstable-kv worker.ts
+```
 
-# For Deno Deploy (KV is stable, no additional permissions needed)
+### Redis / BullMQ
+
+Production-grade backend powered by [BullMQ](https://docs.bullmq.io/). Supports
+concurrency, retries, and all BullMQ features. Requires a running Redis
+instance.
+
+```typescript
+import { BullMQBackend } from "@dafu/hermes/backends/bullmq";
+
+const backend = BullMQBackend({
+  connection: {
+    host: "localhost",
+    port: 6379,
+    // password: "secret",
+  },
+  concurrency: 5, // Process up to 5 jobs concurrently per queue
+  defaultQueueName: "default", // Fallback queue name
+});
+```
+
+```bash
 deno run worker.ts
 ```
 
-**No file system permissions required!** The library only uses:
-- **Deno KV**: Built-in key-value store (no file system access)
-- **Dynamic imports**: For loading job manifests (allowed by default)
-- **Standard APIs**: Logging, timers, signals (no special permissions)
+### Custom Backend
 
-> **Note**: On Deno Deploy, KV is stable and no `--unstable-kv` flag is needed. The `--allow-read` and `--allow-write` permissions mentioned in the original requirements are **not necessary** for this library.
+Implement the `BackendAdapter` interface to use any queue system:
+
+```typescript
+import type { BackendAdapter, EnqueueOptions } from "@dafu/hermes";
+import type { JobPayload } from "@dafu/hermes";
+
+class MyCustomBackend implements BackendAdapter {
+  async enqueue(payload: JobPayload, options?: EnqueueOptions): Promise<void> {
+    // Add the job to your queue system
+  }
+
+  async listen(
+    handler: (payload: JobPayload) => Promise<void>,
+    options?: { queueNames?: string[] },
+  ): Promise<void> {
+    // Start consuming jobs and call handler() for each one
+  }
+
+  async close(): Promise<void> {
+    // Clean up connections
+  }
+}
+```
+
+## Delayed Jobs
+
+Schedule a job to execute after a delay (in milliseconds):
+
+```typescript
+const job = new EmailJob();
+
+// Send the welcome email 5 minutes from now
+await job.performLater(
+  { to: "user@example.com", subject: "Welcome!", body: "Hi!" },
+  { delay: 5 * 60 * 1000 },
+);
+```
+
+## Multi-Queue Architecture
+
+Jobs declare which queue they belong to via `queueName`. This lets you run
+specialized workers that only process specific queues, or a single worker that
+handles everything.
+
+```typescript
+// A high-priority job
+export class PaymentJob extends Job {
+  jobName = "process_payment";
+  queueName = "payments";
+
+  async perform(jobBody: unknown): Promise<void> {
+    // ...
+  }
+}
+
+// A low-priority job
+export class ReportJob extends Job {
+  jobName = "generate_report";
+  queueName = "reports";
+
+  async perform(jobBody: unknown): Promise<void> {
+    // ...
+  }
+}
+```
+
+Hermes automatically extracts all unique queue names from the manifest and
+listens on each one. With the BullMQ backend, each queue gets its own dedicated
+BullMQ Worker for true multi-queue processing.
 
 ## API Reference
 
-### Classes
+### `Hermes(params)`
 
-- `Job`: Abstract base class for all jobs
-- `Hermes`: Main library class for managing workers
-- `Logger`: Structured logging utilities
+Creates a Hermes instance. Returns an object with `start()` and `stop()`
+methods.
 
-### Functions
+```typescript
+const hermes = Hermes({
+  manifest: "./jobs/main.ts", // Path to your jobs manifest file
+  backend: DenoKvBackend(), // A BackendAdapter instance
+  worker: {
+    gracefulShutdownTimeout: 10000, // Shutdown timeout in ms (default: 30000)
+  },
+});
 
-- `createHermes(config)`: Initialize Hermes instance
-- `createAndStartHermes(config)`: Initialize and start Hermes in one call
+await hermes.start(); // Load manifest, register jobs, start worker
+await hermes.stop(); // Gracefully shut down
+```
+
+### `configure({ backend })`
+
+Sets the global backend for enqueuing jobs without starting a worker. Use this in
+processes that only enqueue (e.g., a web server):
+
+```typescript
+import { configure, DenoKvBackend } from "@dafu/hermes";
+
+configure({ backend: DenoKvBackend() });
+// Now you can call job.performLater() anywhere in this process
+```
+
+### `Job` (abstract class)
+
+Base class for all jobs.
+
+| Property / Method | Type | Description |
+| --- | --- | --- |
+| `jobName` | `string` (abstract) | Unique identifier for the job type |
+| `queueName` | `string` (abstract) | Queue this job is dispatched to |
+| `perform(jobBody)` | `Promise<unknown>` (abstract) | The work the job does |
+| `performLater(jobBody?, opts?)` | `Promise<void>` | Enqueue the job for async processing |
+
+### `DenoKvBackend(options?)`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `path` | `string` | `undefined` | Custom path for the KV store file |
+
+### `BullMQBackend(options)`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `connection.host` | `string` | `undefined` | Redis host |
+| `connection.port` | `number` | `undefined` | Redis port |
+| `connection.password` | `string` | `undefined` | Redis password |
+| `connection.url` | `string` | `undefined` | Redis connection URL |
+| `concurrency` | `number` | `1` | Max concurrent jobs per queue worker |
+| `defaultQueueName` | `string` | `"default"` | Fallback queue when none is specified |
 
 ### Types
 
-- `JobPayload`: Structure of enqueued job data
-- `WorkerConfig`: Worker configuration options
-- `JobManifest`: Array of Job class constructors
-- `HermesConfig`: Main configuration interface
+```typescript
+// The payload structure sent through the queue
+type JobPayload = {
+  jobName: string;
+  queueName: string;
+  jobBody: unknown;
+  metadata?: Record<string, unknown>;
+};
 
-## Examples
+// Options for performLater
+type PerformLaterOptions = {
+  delay?: number; // Delay in milliseconds
+};
 
-See the `example/` directory for complete working examples of:
+// Worker configuration
+type WorkerConfig = {
+  concurrency?: number;
+  gracefulShutdownTimeout?: number; // Default: 30000ms
+};
 
-- Job class definitions
-- Worker setup and configuration
-- Job enqueueing
-- Graceful shutdown handling
+// Main configuration
+type HermesParams = {
+  manifest: string; // Path to the manifest file
+  backend: BackendAdapter; // Backend instance
+  worker?: WorkerConfig;
+};
+```
+
+## Logging
+
+Hermes emits structured JSON logs for all job lifecycle events:
+
+```json
+{"timestamp":"2026-01-15T12:00:00.000Z","event":"worker_started","registeredJobs":3,"config":{"queueNames":["emails","reports"]}}
+{"timestamp":"2026-01-15T12:00:01.000Z","event":"job_received","jobName":"send_email","queueName":"emails"}
+{"timestamp":"2026-01-15T12:00:01.001Z","event":"job_started","jobName":"send_email","queueName":"emails"}
+{"timestamp":"2026-01-15T12:00:01.050Z","event":"job_succeeded","jobName":"send_email","queueName":"emails","durationMs":49}
+```
+
+### Event Types
+
+| Event | Description |
+| --- | --- |
+| `worker_started` | Worker is listening for jobs |
+| `job_received` | A job payload was dequeued |
+| `job_started` | Job `perform()` is being called |
+| `job_succeeded` | Job completed without errors |
+| `job_failed` | Job threw an error (includes error message and duration) |
+| `job_skipped` | Job was skipped (e.g., queue filtering) |
+| `unknown_job` | Received a job with an unregistered `jobName` |
+| `worker_stopping` | Shutdown signal received |
+| `worker_stopped` | Worker has fully shut down |
+
+## Error Handling
+
+- **Duplicate `jobName`**: Hermes throws at startup if two job classes share the
+  same `jobName`.
+- **Invalid manifest**: Throws if the manifest file does not export an array via
+  `default` or `jobs`.
+- **Manifest not found**: Throws with a clear message if the manifest path is
+  wrong.
+- **Unknown job**: If a queued message references an unregistered `jobName`, the
+  worker logs an `unknown_job` event and skips it.
+- **Job execution failure**: If `perform()` throws, the error is logged with the
+  `job_failed` event (including duration) and re-thrown to the backend, which can
+  handle retries if supported.
+
+## Running the Examples
+
+The repository includes working examples for both backends:
+
+```bash
+# Deno KV backend
+deno task worker          # Start the worker
+deno task enqueue         # Enqueue a job
+
+# Redis/BullMQ backend (requires a running Redis instance)
+deno task worker:redis    # Start the worker
+deno task enqueue:redis   # Enqueue a job
+```
+
+## Running Tests
+
+```bash
+deno task test
+```
 
 ## License
 

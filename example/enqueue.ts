@@ -1,5 +1,8 @@
+import { configure, DenoKvBackend } from "@hermes";
 import { ExampleJob } from "./jobs/example_job.ts";
 
-const job = new ExampleJob();
+configure({ backend: DenoKvBackend() });
 
-await job.perform_later();
+const job = new ExampleJob();
+await job.performLater({ message: "hello" });
+console.log("Job enqueued (Deno KV backend)");
