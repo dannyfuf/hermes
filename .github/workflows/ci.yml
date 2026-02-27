@@ -15,4 +15,4 @@ jobs:
         with:
           deno-version: v2.x
       - run: deno check src/main.ts
-      - run: deno test --unstable-kv
+      - run: deno test -A --unstable-kv
