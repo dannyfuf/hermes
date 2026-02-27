@@ -2,6 +2,7 @@ import type { JobPayload, PerformLaterOptions } from "./types.ts";
 import { getBackend } from "./backend_registry.ts";
 import { intervalToMs, parseEveryInterval } from "./schedule.ts";
 
+/** Base class for defining background jobs. Subclasses must implement `jobName`, `queueName`, and `perform`. */
 export abstract class Job {
   abstract readonly jobName: string;
   abstract readonly queueName: string;

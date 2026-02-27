@@ -1,10 +1,12 @@
 import type { JobPayload } from "./types.ts";
 
+/** Options passed when enqueueing a job. */
 export interface EnqueueOptions {
   delay?: number;
   queueName?: string;
 }
 
+/** Configuration for registering a recurring job schedule. */
 export interface RecurringJobConfig {
   jobName: string;
   queueName: string;
@@ -13,6 +15,7 @@ export interface RecurringJobConfig {
   jobBody?: unknown;
 }
 
+/** Interface that all Hermes backend adapters must implement. */
 export interface BackendAdapter {
   /**
    * Enqueue a job payload for async processing.

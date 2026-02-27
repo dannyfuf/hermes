@@ -1,3 +1,20 @@
+/**
+ * BullMQ backend adapter for Hermes, using Redis-backed queues.
+ *
+ * @example
+ * ```ts
+ * import { Hermes } from "@dafu/hermes";
+ * import { BullMQBackend } from "@dafu/hermes/backends/bullmq";
+ *
+ * const hermes = Hermes({
+ *   manifest: "./jobs/manifest.json",
+ *   backend: BullMQBackend({ connection: { host: "localhost", port: 6379 } }),
+ * });
+ * ```
+ *
+ * @module
+ */
+
 import { type Job as BullMQJob, Queue, Worker } from "bullmq";
 import type {
   BackendAdapter,
@@ -7,6 +24,7 @@ import type {
 import type { JobPayload } from "../types.ts";
 import { intervalToMs, parseEveryInterval } from "../schedule.ts";
 
+/** Options for the BullMQ backend adapter. */
 export interface BullMQBackendOptions {
   connection: {
     host?: string;
@@ -109,6 +127,7 @@ class TBullMQBackend implements BackendAdapter {
   }
 }
 
+/** Create a BullMQ (Redis) backend adapter for Hermes. */
 export const BullMQBackend = (
   options: BullMQBackendOptions,
 ): BackendAdapter => {

@@ -6,6 +6,7 @@ import type {
 import type { JobPayload } from "../types.ts";
 import { intervalToCronSchedule, parseEveryInterval } from "../schedule.ts";
 
+/** Options for the Deno KV backend adapter. */
 export interface DenoKvBackendOptions {
   path?: string;
 }
@@ -72,6 +73,7 @@ class TDenoKvBackend implements BackendAdapter {
   }
 }
 
+/** Create a Deno KV backend adapter for Hermes. */
 export const DenoKvBackend = (options?: DenoKvBackendOptions): BackendAdapter => {
   return new TDenoKvBackend(options);
 };

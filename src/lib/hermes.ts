@@ -6,6 +6,7 @@ import type { BackendAdapter } from "./backend.ts";
 import type { HermesParams } from "./types.ts";
 import { Logger } from "./logger.ts";
 
+/** A running Hermes instance that manages job workers. */
 export interface HermesInstance {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -71,10 +72,12 @@ class THermes implements HermesInstance {
   }
 }
 
+/** Create a new Hermes instance with the given backend and job manifest. */
 export const Hermes = (params: HermesParams): HermesInstance => {
   return new THermes(params);
 };
 
+/** Configure the global backend adapter for standalone job enqueueing without starting a worker. */
 export const configure = (
   { backend }: { backend: BackendAdapter },
 ): void => {

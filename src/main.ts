@@ -1,3 +1,20 @@
+/**
+ * Hermes - A background job framework for Deno with pluggable backends.
+ *
+ * @example
+ * ```ts
+ * import { Hermes, DenoKvBackend } from "@dafu/hermes";
+ *
+ * const hermes = Hermes({
+ *   manifest: "./jobs/manifest.json",
+ *   backend: DenoKvBackend(),
+ * });
+ * await hermes.start();
+ * ```
+ *
+ * @module
+ */
+
 export { Job } from "./lib/job.ts";
 export { configure, Hermes } from "./lib/hermes.ts";
 export type { HermesInstance } from "./lib/hermes.ts";

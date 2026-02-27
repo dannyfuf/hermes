@@ -1,9 +1,11 @@
 import type { BackendAdapter } from "./backend.ts";
 
+/** Options for scheduling a job to run later. */
 export type PerformLaterOptions = {
   delay?: number;
 };
 
+/** The serialized payload passed through the queue for each job execution. */
 export type JobPayload = {
   jobName: string;
   queueName: string;
@@ -11,11 +13,13 @@ export type JobPayload = {
   metadata?: Record<string, unknown>;
 };
 
+/** Configuration options for the job worker. */
 export type WorkerConfig = {
   concurrency?: number;
   gracefulShutdownTimeout?: number;
 };
 
+/** Parameters for creating a Hermes instance. */
 export type HermesParams = {
   manifest: string;
   backend: BackendAdapter;
