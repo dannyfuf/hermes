@@ -5,6 +5,14 @@ export interface EnqueueOptions {
   queueName?: string;
 }
 
+export interface RecurringJobConfig {
+  jobName: string;
+  queueName: string;
+  every?: string;
+  cron?: string;
+  jobBody?: unknown;
+}
+
 export interface BackendAdapter {
   /**
    * Enqueue a job payload for async processing.
@@ -24,4 +32,14 @@ export interface BackendAdapter {
    * Gracefully shut down the backend connection.
    */
   close(): Promise<void>;
+
+  /**
+   * Register a recurring job schedule. Optional — not all backends must implement.
+   */
+  registerRecurringJob?(config: RecurringJobConfig): Promise<void>;
+
+  /**
+   * Remove a recurring job schedule. Optional — not all backends must implement.
+   */
+  removeRecurringJob?(jobName: string): Promise<void>;
 }

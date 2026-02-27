@@ -107,6 +107,24 @@ export class Logger {
     });
   }
 
+  static recurringJobRegistered(jobName: string, schedule: string): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "recurring_job_registered",
+      jobName,
+      schedule,
+    });
+  }
+
+  static recurringJobSkipped(jobName: string, reason: string): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "recurring_job_skipped",
+      jobName,
+      reason,
+    });
+  }
+
   static info(message: string, data?: Record<string, unknown>): void {
     this.log({
       timestamp: this.formatTimestamp(),
