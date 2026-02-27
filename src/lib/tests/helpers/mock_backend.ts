@@ -1,8 +1,14 @@
-import type { BackendAdapter, EnqueueOptions } from "../../backend.ts";
+import type {
+  BackendAdapter,
+  EnqueueOptions,
+  RecurringJobConfig,
+} from "../../backend.ts";
 import type { JobPayload } from "../../types.ts";
 
 export class MockBackend implements BackendAdapter {
   enqueued: { payload: JobPayload; options?: EnqueueOptions }[] = [];
+  registeredRecurringJobs: RecurringJobConfig[] = [];
+  removedRecurringJobs: string[] = [];
   listenOptions: { queueNames?: string[] } | undefined = undefined;
   private handler: ((payload: JobPayload) => Promise<void>) | null = null;
 
@@ -23,6 +29,16 @@ export class MockBackend implements BackendAdapter {
   close(): Promise<void> {
     this.handler = null;
     return Promise.resolve();
+  }
+
+  // deno-lint-ignore require-await
+  async registerRecurringJob(config: RecurringJobConfig): Promise<void> {
+    this.registeredRecurringJobs.push(config);
+  }
+
+  // deno-lint-ignore require-await
+  async removeRecurringJob(jobName: string): Promise<void> {
+    this.removedRecurringJobs.push(jobName);
   }
 
   /** Test helper: manually trigger processing of a payload */

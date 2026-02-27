@@ -1,7 +1,12 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { clearBackend, setBackend } from "../backend_registry.ts";
 import { MockBackend } from "./helpers/mock_backend.ts";
-import { CustomQueueJob, TestJob } from "./helpers/test_jobs.ts";
+import {
+  CustomQueueJob,
+  RecurringCronJob,
+  RecurringEveryJob,
+  TestJob,
+} from "./helpers/test_jobs.ts";
 
 Deno.test("Job", async (t) => {
   await t.step("subclass can define jobName and queueName", () => {
@@ -76,4 +81,34 @@ Deno.test("Job", async (t) => {
       assertEquals(backend.enqueued[0].payload.jobBody, undefined);
     },
   );
+
+  await t.step("isRecurring() returns false for non-recurring jobs", () => {
+    const job = new TestJob();
+    assertEquals(job.isRecurring(), false);
+  });
+
+  await t.step("isRecurring() returns true for every-based jobs", () => {
+    const job = new RecurringEveryJob();
+    assertEquals(job.isRecurring(), true);
+  });
+
+  await t.step("isRecurring() returns true for cron-based jobs", () => {
+    const job = new RecurringCronJob();
+    assertEquals(job.isRecurring(), true);
+  });
+
+  await t.step("getScheduleMs() returns milliseconds for every-based jobs", () => {
+    const job = new RecurringEveryJob();
+    assertEquals(job.getScheduleMs(), 300_000); // 5m = 300,000ms
+  });
+
+  await t.step("getScheduleMs() returns undefined for cron-based jobs", () => {
+    const job = new RecurringCronJob();
+    assertEquals(job.getScheduleMs(), undefined);
+  });
+
+  await t.step("getScheduleMs() returns undefined for non-recurring jobs", () => {
+    const job = new TestJob();
+    assertEquals(job.getScheduleMs(), undefined);
+  });
 });

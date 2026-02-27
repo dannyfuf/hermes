@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import type { BackendAdapter, EnqueueOptions } from "../../backend.ts";
 import type { JobPayload } from "../../types.ts";
 
@@ -138,6 +138,49 @@ Deno.test({
 
       await new Promise((resolve) => setTimeout(resolve, 1000));
       assertEquals(receivedPayloads.length, 1);
+    } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: registerRecurringJob throws for seconds interval",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+
+    try {
+      await assertRejects(
+        () =>
+          backend.registerRecurringJob!({
+            jobName: "seconds_job",
+            queueName: "default",
+            every: "5s",
+          }),
+        Error,
+        "Seconds-level intervals are not supported on the Deno KV backend",
+      );
+    } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: registerRecurringJob throws without every or cron",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+
+    try {
+      await assertRejects(
+        () =>
+          backend.registerRecurringJob!({
+            jobName: "no_schedule_job",
+            queueName: "default",
+          }),
+        Error,
+        "Recurring job must have either 'every' or 'cron'",
+      );
     } finally {
       await cleanup();
     }

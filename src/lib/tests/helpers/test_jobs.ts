@@ -27,6 +27,30 @@ export class FailingJob extends Job {
   }
 }
 
+export class RecurringEveryJob extends Job {
+  readonly jobName = "recurring_every_job";
+  readonly queueName = "default";
+  override readonly every = "5m";
+
+  // deno-lint-ignore require-await
+  async perform(jobBody: unknown): Promise<unknown> {
+    performCalls.push({ jobName: this.jobName, jobBody });
+    return { ok: true };
+  }
+}
+
+export class RecurringCronJob extends Job {
+  readonly jobName = "recurring_cron_job";
+  readonly queueName = "default";
+  override readonly cron = "0 9 * * 1-5";
+
+  // deno-lint-ignore require-await
+  async perform(jobBody: unknown): Promise<unknown> {
+    performCalls.push({ jobName: this.jobName, jobBody });
+    return { ok: true };
+  }
+}
+
 export class CustomQueueJob extends Job {
   readonly jobName = "custom_queue_job";
   readonly queueName = "priority";

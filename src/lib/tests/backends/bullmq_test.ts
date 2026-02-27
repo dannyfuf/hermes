@@ -173,6 +173,86 @@ Deno.test({
 });
 
 Deno.test({
+  name: "BullMQBackend: registers and executes recurring job with every",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_recurring_every`;
+
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+
+    const executions: JobPayload[] = [];
+    let resolveTwo: () => void;
+    const twoExecutions = new Promise<void>((r) => resolveTwo = r);
+
+    await backend.listen(async (payload: JobPayload) => {
+      executions.push(payload);
+      if (executions.length >= 2) resolveTwo();
+      await Promise.resolve();
+    }, { queueNames: [queueName] });
+
+    await backend.registerRecurringJob!({
+      jobName: "recurring_every_test",
+      queueName,
+      every: "1s",
+      jobBody: { test: true },
+    });
+
+    let timeoutId: number | undefined;
+    await Promise.race([
+      twoExecutions,
+      new Promise<void>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error("Timeout waiting for recurring job executions")),
+          10000,
+        ) as unknown as number;
+      }),
+    ]);
+    clearTimeout(timeoutId);
+
+    assertEquals(executions.length >= 2, true);
+    assertEquals(executions[0].jobName, "recurring_every_test");
+
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: registers recurring job with cron expression",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_recurring_cron`;
+
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+
+    // Register a cron-based recurring job (should not throw)
+    await backend.registerRecurringJob!({
+      jobName: "recurring_cron_test",
+      queueName,
+      cron: "0 * * * *",
+    });
+
+    // Upsert again should also not throw (idempotent)
+    await backend.registerRecurringJob!({
+      jobName: "recurring_cron_test",
+      queueName,
+      cron: "0 * * * *",
+    });
+
+    await backend.close();
+  },
+});
+
+Deno.test({
   name: "BullMQBackend: uses defaultQueueName when payload has no queueName",
   ignore: !redisAvailable,
   sanitizeOps: false,
