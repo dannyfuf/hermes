@@ -1,6 +1,11 @@
 import { type Job as BullMQJob, Queue, Worker } from "bullmq";
-import type { BackendAdapter, EnqueueOptions } from "../backend.ts";
+import type {
+  BackendAdapter,
+  EnqueueOptions,
+  RecurringJobConfig,
+} from "../backend.ts";
 import type { JobPayload } from "../types.ts";
+import { intervalToMs, parseEveryInterval } from "../schedule.ts";
 
 export interface BullMQBackendOptions {
   connection: {
@@ -65,6 +70,29 @@ class TBullMQBackend implements BackendAdapter {
       );
       this.workers.set(queueName, worker);
     }
+  }
+
+  async registerRecurringJob(config: RecurringJobConfig): Promise<void> {
+    const queue = this.getOrCreateQueue(config.queueName);
+    const schedulerId = `hermes:${config.jobName}`;
+
+    const repeatOpts: { every?: number; pattern?: string } = {};
+    if (config.every) {
+      repeatOpts.every = intervalToMs(parseEveryInterval(config.every));
+    } else if (config.cron) {
+      repeatOpts.pattern = config.cron;
+    }
+
+    const payload: JobPayload = {
+      jobName: config.jobName,
+      queueName: config.queueName,
+      jobBody: config.jobBody,
+    };
+
+    await queue.upsertJobScheduler(schedulerId, repeatOpts, {
+      name: config.jobName,
+      data: payload,
+    });
   }
 
   async close(): Promise<void> {

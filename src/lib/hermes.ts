@@ -4,6 +4,7 @@ import { Worker } from "./worker.ts";
 import { setBackend } from "./backend_registry.ts";
 import type { BackendAdapter } from "./backend.ts";
 import type { HermesParams } from "./types.ts";
+import { Logger } from "./logger.ts";
 
 export interface HermesInstance {
   start(): Promise<void>;
@@ -33,6 +34,30 @@ class THermes implements HermesInstance {
         ),
       ),
     ];
+
+    // Register recurring jobs if backend supports it
+    if (this.params.backend.registerRecurringJob) {
+      for (const [_, jobClass] of jobsMap) {
+        const instance = new jobClass();
+        if (instance.isRecurring()) {
+          if (instance.every && instance.cron) {
+            throw new Error(
+              `Job "${instance.jobName}" cannot have both 'every' and 'cron'`,
+            );
+          }
+          await this.params.backend.registerRecurringJob({
+            jobName: instance.jobName,
+            queueName: instance.queueName,
+            every: instance.every,
+            cron: instance.cron,
+          });
+          Logger.recurringJobRegistered(
+            instance.jobName,
+            instance.every || instance.cron!,
+          );
+        }
+      }
+    }
 
     await Worker.start({
       jobsMap,
