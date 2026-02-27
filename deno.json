@@ -1,6 +1,7 @@
 {
   "name": "@dafu/hermes",
   "version": "0.2.0",
+  "description": "A background job framework for Deno with pluggable backends (Deno KV, BullMQ) and support for recurring jobs.",
   "license": "MIT",
   "exports": {
     ".": "./src/main.ts",
