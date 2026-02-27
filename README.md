@@ -204,6 +204,54 @@ class MyCustomBackend implements BackendAdapter {
 }
 ```
 
+## Recurring Jobs
+
+Define jobs that run on a schedule using `every` (interval) or `cron` (expression) properties. Recurring jobs are registered automatically when `hermes.start()` is called.
+
+### Interval-based (`every`)
+
+Use `[number][unit]` format where unit is `s` (seconds), `m` (minutes), `h` (hours), or `d` (days):
+
+```typescript
+export class HealthCheckJob extends Job {
+  jobName = "health_check";
+  queueName = "default";
+  every = "5m"; // Run every 5 minutes
+
+  async perform(): Promise<void> {
+    console.log("Running health check...");
+  }
+}
+```
+
+### Cron-based (`cron`)
+
+Use standard 5 or 6 field cron expressions:
+
+```typescript
+export class DailyReportJob extends Job {
+  jobName = "daily_report";
+  queueName = "reports";
+  cron = "0 9 * * 1-5"; // 9 AM Monday-Friday
+
+  async perform(): Promise<void> {
+    console.log("Generating daily report...");
+  }
+}
+```
+
+### Backend Differences
+
+| Feature | Deno KV | BullMQ (Redis) |
+| --- | --- | --- |
+| `every` support | Minutes and above (`m`, `h`, `d`) | All units including seconds (`s`) |
+| `cron` support | Yes | Yes |
+| Deduplication | Automatic via `Deno.cron` | Automatic via `upsertJobScheduler` |
+| Overlap prevention | Built-in | Built-in |
+
+> **Note**: Seconds-level granularity (`s`) is only supported on BullMQ. Deno KV's
+> minimum granularity is 1 minute since `Deno.cron` has no seconds field.
+
 ## Delayed Jobs
 
 Schedule a job to execute after a delay (in milliseconds):
@@ -290,8 +338,11 @@ Base class for all jobs.
 | --- | --- | --- |
 | `jobName` | `string` (abstract) | Unique identifier for the job type |
 | `queueName` | `string` (abstract) | Queue this job is dispatched to |
+| `every` | `string?` | Interval schedule, e.g. `"5m"`, `"1h"`, `"7d"` |
+| `cron` | `string?` | Cron expression, e.g. `"0 9 * * 1-5"` |
 | `perform(jobBody)` | `Promise<unknown>` (abstract) | The work the job does |
 | `performLater(jobBody?, opts?)` | `Promise<void>` | Enqueue the job for async processing |
+| `isRecurring()` | `boolean` | Whether the job has a recurring schedule |
 
 ### `DenoKvBackend(options?)`
 
@@ -362,6 +413,8 @@ Hermes emits structured JSON logs for all job lifecycle events:
 | `job_failed` | Job threw an error (includes error message and duration) |
 | `job_skipped` | Job was skipped (e.g., queue filtering) |
 | `unknown_job` | Received a job with an unregistered `jobName` |
+| `recurring_job_registered` | A recurring job schedule was registered at startup |
+| `recurring_job_skipped` | A recurring job schedule registration was skipped |
 | `worker_stopping` | Shutdown signal received |
 | `worker_stopped` | Worker has fully shut down |
 
