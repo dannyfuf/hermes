@@ -1,6 +1,6 @@
 # Hermes
 
-A backend-agnostic background job processing library for Deno. Define jobs as
+A backend-agnostic background job processing library for TypeScript. Define jobs as
 classes, enqueue them from anywhere, and process them with pluggable backends
 like **Deno KV** or **Redis (BullMQ)**.
 
