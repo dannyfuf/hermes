@@ -15,7 +15,12 @@
  * @module
  */
 
-import { type Job as BullMQJob, Queue, Worker } from "bullmq";
+import {
+  type DefaultJobOptions,
+  type Job as BullMQJob,
+  Queue,
+  Worker,
+} from "bullmq";
 import type {
   BackendAdapter,
   EnqueueOptions,
@@ -34,15 +39,42 @@ export interface BullMQBackendOptions {
   };
   defaultQueueName?: string;
   concurrency?: number;
+  /**
+   * Default options applied to every enqueued and recurring job, e.g. retention
+   * (`removeOnComplete`/`removeOnFail`), attempts and backoff.
+   *
+   * BullMQ keeps completed and failed jobs in Redis indefinitely by default, so
+   * recurring jobs pile up one record per run forever. To avoid unbounded
+   * growth this backend applies bounded retention by default (see
+   * {@link DEFAULT_JOB_OPTIONS}); whatever you pass here is merged on top and
+   * takes precedence.
+   */
+  defaultJobOptions?: DefaultJobOptions;
 }
+
+/**
+ * Bounded retention applied when the caller does not override it, so Redis does
+ * not grow without limit. Keeps a recent window of completed/failed jobs for
+ * inspection while discarding the rest. Override via
+ * {@link BullMQBackendOptions.defaultJobOptions}.
+ */
+const DEFAULT_JOB_OPTIONS: DefaultJobOptions = {
+  removeOnComplete: { count: 1000 },
+  removeOnFail: { count: 5000 },
+};
 
 class TBullMQBackend implements BackendAdapter {
   private queues: Map<string, Queue> = new Map();
   private workers: Map<string, Worker> = new Map();
   private options: BullMQBackendOptions;
+  private jobOptions: DefaultJobOptions;
 
   constructor(options: BullMQBackendOptions) {
     this.options = options;
+    this.jobOptions = {
+      ...DEFAULT_JOB_OPTIONS,
+      ...options.defaultJobOptions,
+    };
   }
 
   private getOrCreateQueue(queueName: string): Queue {
@@ -51,6 +83,7 @@ class TBullMQBackend implements BackendAdapter {
         queueName,
         new Queue(queueName, {
           connection: this.options.connection,
+          defaultJobOptions: this.jobOptions,
         }),
       );
     }
@@ -107,9 +140,13 @@ class TBullMQBackend implements BackendAdapter {
       jobBody: config.jobBody,
     };
 
+    // Pass retention on the scheduler's job template too: jobs produced by a
+    // scheduler do not inherit the queue's defaultJobOptions, so without this
+    // each recurring run would leave a job record in Redis forever.
     await queue.upsertJobScheduler(schedulerId, repeatOpts, {
       name: config.jobName,
       data: payload,
+      opts: this.jobOptions,
     });
   }
 

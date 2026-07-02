@@ -207,7 +207,8 @@ Deno.test({
       twoExecutions,
       new Promise<void>((_, reject) => {
         timeoutId = setTimeout(
-          () => reject(new Error("Timeout waiting for recurring job executions")),
+          () =>
+            reject(new Error("Timeout waiting for recurring job executions")),
           10000,
         ) as unknown as number;
       }),
@@ -296,6 +297,65 @@ Deno.test({
 
     assertEquals(processed.length, 1);
     assertEquals(processed[0].jobName, "default_queue_job");
+
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name:
+    "BullMQBackend: applies defaultJobOptions retention (no completed pile-up)",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const { Queue } = await import("bullmq");
+    const queueName = `test_bullmq_${testRunId}_retention`;
+
+    // removeOnComplete: true removes each job as soon as it completes, so a
+    // healthy backend leaves zero completed jobs behind. Without the backend
+    // wiring defaultJobOptions through, completed jobs would accumulate.
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+      defaultJobOptions: { removeOnComplete: true, removeOnFail: true },
+    });
+
+    let resolveProcessed: () => void;
+    const processed = new Promise<void>((r) => resolveProcessed = r);
+    await backend.listen(async (_payload: JobPayload) => {
+      resolveProcessed();
+      await Promise.resolve();
+    }, { queueNames: [queueName] });
+
+    await backend.enqueue({
+      jobName: "retention_job",
+      queueName,
+      jobBody: { test: true },
+    });
+
+    let timeoutId: number | undefined;
+    await Promise.race([
+      processed,
+      new Promise<void>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error("Timeout waiting for retention job")),
+          10000,
+        ) as unknown as number;
+      }),
+    ]);
+    clearTimeout(timeoutId);
+
+    // Let BullMQ move the job to completed and remove it.
+    await new Promise((r) => setTimeout(r, 500));
+
+    const inspector = new Queue(queueName, {
+      connection: { host: "localhost", port: 6379 },
+    });
+    const completedCount = await inspector.getCompletedCount();
+    await inspector.close();
+
+    assertEquals(completedCount, 0);
 
     await backend.close();
   },
