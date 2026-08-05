@@ -27,6 +27,7 @@ export type {
 } from "./lib/backend.ts";
 export type {
   HermesParams,
+  JobContext,
   JobPayload,
   PerformLaterOptions,
   WorkerConfig,

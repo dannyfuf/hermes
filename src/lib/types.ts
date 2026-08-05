@@ -5,6 +5,11 @@ export type PerformLaterOptions = {
   delay?: number;
 };
 
+/** Context supplied to a running job. */
+export type JobContext = {
+  signal: AbortSignal;
+};
+
 /** The serialized payload passed through the queue for each job execution. */
 export type JobPayload = {
   jobName: string;
@@ -17,6 +22,7 @@ export type JobPayload = {
 export type WorkerConfig = {
   concurrency?: number;
   gracefulShutdownTimeout?: number;
+  defaultJobTimeout?: string | number;
 };
 
 /** Parameters for creating a Hermes instance. */
@@ -31,4 +37,5 @@ export type WorkerParams = {
   jobsMap: Map<string, any>;
   backend: BackendAdapter;
   queueNames?: string[];
+  timeoutByJobName: ReadonlyMap<string, number | undefined>;
 };

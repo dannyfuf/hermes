@@ -1,6 +1,6 @@
 import { JobLoader } from "./job_loader.ts";
 import { ManifestLoader } from "./manifest_loader.ts";
-import { Worker } from "./worker.ts";
+import { resolveJobTimeouts, Worker } from "./worker.ts";
 import { setBackend } from "./backend_registry.ts";
 import type { BackendAdapter } from "./backend.ts";
 import type { HermesParams } from "./types.ts";
@@ -25,6 +25,10 @@ class THermes implements HermesInstance {
       manifestPath: this.params.manifest,
     });
     const jobsMap = await JobLoader(jobManifest).run();
+    const timeoutByJobName = resolveJobTimeouts(
+      jobsMap,
+      this.params.worker?.defaultJobTimeout,
+    );
 
     // Extract unique queue names from registered jobs for BullMQ routing
     const queueNames = [
@@ -64,6 +68,7 @@ class THermes implements HermesInstance {
       jobsMap,
       backend: this.params.backend,
       queueNames,
+      timeoutByJobName,
     });
   }
 

@@ -1,5 +1,6 @@
-import { assertEquals, assertRejects } from "@std/assert";
-import { Worker } from "../worker.ts";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import { resolveJobTimeouts, Worker } from "../worker.ts";
+import { Job } from "../job.ts";
 import { MockBackend } from "./helpers/mock_backend.ts";
 import {
   clearPerformCalls,
@@ -7,7 +8,79 @@ import {
   performCalls,
   TestJob,
 } from "./helpers/test_jobs.ts";
-import type { JobPayload } from "../types.ts";
+import type { JobContext, JobPayload } from "../types.ts";
+
+let observedSignal: AbortSignal | undefined;
+
+function observedSignalAborted(): boolean | undefined {
+  return observedSignal?.aborted;
+}
+
+class HangingJob extends Job {
+  readonly jobName = "hanging_job";
+  readonly queueName = "default";
+  override readonly timeout = 15;
+
+  perform(_jobBody: unknown, context?: JobContext): Promise<unknown> {
+    observedSignal = context?.signal;
+    return new Promise(() => {});
+  }
+}
+
+class DefaultTimeoutJob extends Job {
+  readonly jobName = "default_timeout_job";
+  readonly queueName = "default";
+
+  perform(_jobBody: unknown, context?: JobContext): Promise<unknown> {
+    observedSignal = context?.signal;
+    return new Promise(() => {});
+  }
+}
+
+class SuccessfulTimedJob extends Job {
+  readonly jobName = "successful_timed_job";
+  readonly queueName = "default";
+  override readonly timeout = 10;
+
+  async perform(
+    _jobBody: unknown,
+    context?: JobContext,
+  ): Promise<unknown> {
+    observedSignal = context?.signal;
+    return await Promise.resolve("done");
+  }
+}
+
+class InvalidTimeoutJob extends Job {
+  readonly jobName = "invalid_timeout_job";
+  readonly queueName = "default";
+  override readonly timeout = "soon";
+
+  async perform(_jobBody: unknown): Promise<unknown> {
+    return await Promise.resolve();
+  }
+}
+
+class SynchronousThrowingTimedJob extends Job {
+  readonly jobName = "synchronous_throwing_timed_job";
+  readonly queueName = "default";
+  override readonly timeout = 60_000;
+
+  perform(_jobBody: unknown): Promise<unknown> {
+    throw new Error("synchronous timed failure");
+  }
+}
+
+class AsyncRejectingTimedJob extends Job {
+  readonly jobName = "async_rejecting_timed_job";
+  readonly queueName = "default";
+  override readonly timeout = 60_000;
+
+  async perform(_jobBody: unknown): Promise<unknown> {
+    await Promise.resolve();
+    throw new Error("asynchronous timed failure");
+  }
+}
 
 Deno.test("Worker", async (t) => {
   await t.step(
@@ -20,7 +93,11 @@ Deno.test("Worker", async (t) => {
         ["test_job", TestJob],
       ]);
 
-      await Worker.start({ jobsMap, backend });
+      await Worker.start({
+        jobsMap,
+        backend,
+        timeoutByJobName: resolveJobTimeouts(jobsMap),
+      });
 
       const payload: JobPayload = {
         jobName: "test_job",
@@ -42,7 +119,11 @@ Deno.test("Worker", async (t) => {
     // deno-lint-ignore no-explicit-any
     const jobsMap = new Map<string, any>();
 
-    await Worker.start({ jobsMap, backend });
+    await Worker.start({
+      jobsMap,
+      backend,
+      timeoutByJobName: resolveJobTimeouts(jobsMap),
+    });
 
     const payload: JobPayload = {
       jobName: "nonexistent_job",
@@ -63,7 +144,11 @@ Deno.test("Worker", async (t) => {
         ["failing_job", FailingJob],
       ]);
 
-      await Worker.start({ jobsMap, backend });
+      await Worker.start({
+        jobsMap,
+        backend,
+        timeoutByJobName: resolveJobTimeouts(jobsMap),
+      });
 
       const payload: JobPayload = {
         jobName: "failing_job",
@@ -88,10 +173,168 @@ Deno.test("Worker", async (t) => {
       jobsMap,
       backend,
       queueNames: ["default", "priority"],
+      timeoutByJobName: resolveJobTimeouts(jobsMap),
     });
 
     assertEquals(backend.listenOptions?.queueNames, ["default", "priority"]);
   });
+
+  await t.step(
+    "rejects timed-out jobs with JobTimeoutError and aborts the signal",
+    async () => {
+      observedSignal = undefined;
+      const backend = new MockBackend();
+      // deno-lint-ignore no-explicit-any
+      const jobsMap = new Map<string, any>([["hanging_job", HangingJob]]);
+      await Worker.start({
+        jobsMap,
+        backend,
+        timeoutByJobName: resolveJobTimeouts(jobsMap),
+      });
+
+      const error = await assertRejects(() =>
+        backend.process({
+          jobName: "hanging_job",
+          queueName: "default",
+          jobBody: null,
+        })
+      );
+
+      assert(error instanceof Error);
+      assertEquals(error.name, "JobTimeoutError");
+      assert(error.message.includes("hanging_job"));
+      assert(error.message.includes("15"));
+      assertEquals(observedSignalAborted(), true);
+    },
+  );
+
+  await t.step("applies defaultJobTimeout when the job has none", async () => {
+    observedSignal = undefined;
+    const backend = new MockBackend();
+    // deno-lint-ignore no-explicit-any
+    const jobsMap = new Map<string, any>([[
+      "default_timeout_job",
+      DefaultTimeoutJob,
+    ]]);
+    await Worker.start({
+      jobsMap,
+      backend,
+      timeoutByJobName: resolveJobTimeouts(jobsMap, "1s"),
+    });
+
+    const error = await assertRejects(() =>
+      backend.process({
+        jobName: "default_timeout_job",
+        queueName: "default",
+        jobBody: null,
+      })
+    );
+    assert(error instanceof Error);
+    assertEquals(error.name, "JobTimeoutError");
+    assertEquals(observedSignalAborted(), true);
+  });
+
+  await t.step("clears the timeout after a successful job", async () => {
+    observedSignal = undefined;
+    const backend = new MockBackend();
+    // deno-lint-ignore no-explicit-any
+    const jobsMap = new Map<string, any>([[
+      "successful_timed_job",
+      SuccessfulTimedJob,
+    ]]);
+    await Worker.start({
+      jobsMap,
+      backend,
+      timeoutByJobName: resolveJobTimeouts(jobsMap),
+    });
+
+    await backend.process({
+      jobName: "successful_timed_job",
+      queueName: "default",
+      jobBody: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assertEquals(observedSignalAborted(), false);
+  });
+
+  await t.step(
+    "rejects invalid timeout strings during resolution",
+    async () => {
+      const backend = new MockBackend();
+      // deno-lint-ignore no-explicit-any
+      const jobsMap = new Map<string, any>([[
+        "invalid_timeout_job",
+        InvalidTimeoutJob,
+      ]]);
+
+      await assertRejects(
+        async () => {
+          resolveJobTimeouts(jobsMap);
+          await Promise.resolve();
+        },
+        Error,
+        'Invalid timeout for job "invalid_timeout_job"',
+      );
+      assertEquals(backend.isListening, false);
+    },
+  );
+
+  await t.step(
+    "clears the timeout when a timed job throws synchronously",
+    async () => {
+      const backend = new MockBackend();
+      // deno-lint-ignore no-explicit-any
+      const jobsMap = new Map<string, any>([[
+        "synchronous_throwing_timed_job",
+        SynchronousThrowingTimedJob,
+      ]]);
+      await Worker.start({
+        jobsMap,
+        backend,
+        timeoutByJobName: resolveJobTimeouts(jobsMap),
+      });
+
+      await assertRejects(
+        () =>
+          backend.process({
+            jobName: "synchronous_throwing_timed_job",
+            queueName: "default",
+            jobBody: null,
+          }),
+        Error,
+        "synchronous timed failure",
+      );
+    },
+  );
+
+  await t.step(
+    "clears the timeout when a timed job rejects asynchronously",
+    async () => {
+      const backend = new MockBackend();
+      // deno-lint-ignore no-explicit-any
+      const jobsMap = new Map<string, any>([[
+        "async_rejecting_timed_job",
+        AsyncRejectingTimedJob,
+      ]]);
+      await Worker.start({
+        jobsMap,
+        backend,
+        timeoutByJobName: resolveJobTimeouts(jobsMap),
+      });
+
+      await assertRejects(
+        () =>
+          backend.process({
+            jobName: "async_rejecting_timed_job",
+            queueName: "default",
+            jobBody: null,
+          }),
+        Error,
+        "asynchronous timed failure",
+      );
+    },
+  );
 
   await t.step(
     "measures duration and logs for succeeded jobs",
@@ -113,7 +356,11 @@ Deno.test("Worker", async (t) => {
         const jobsMap = new Map<string, any>([
           ["test_job", TestJob],
         ]);
-        await Worker.start({ jobsMap, backend });
+        await Worker.start({
+          jobsMap,
+          backend,
+          timeoutByJobName: resolveJobTimeouts(jobsMap),
+        });
 
         const payload: JobPayload = {
           jobName: "test_job",
@@ -155,7 +402,11 @@ Deno.test("Worker", async (t) => {
         const jobsMap = new Map<string, any>([
           ["failing_job", FailingJob],
         ]);
-        await Worker.start({ jobsMap, backend });
+        await Worker.start({
+          jobsMap,
+          backend,
+          timeoutByJobName: resolveJobTimeouts(jobsMap),
+        });
 
         const payload: JobPayload = {
           jobName: "failing_job",

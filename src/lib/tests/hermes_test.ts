@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { clearBackend } from "../backend_registry.ts";
 import { MockBackend } from "./helpers/mock_backend.ts";
 import type { BackendAdapter } from "../backend.ts";
@@ -88,6 +88,49 @@ Deno.test("Hermes", async (t) => {
       assertEquals(queueNames.includes("priority"), true);
 
       await hermes.stop();
+    },
+  );
+
+  await t.step("start() rejects an invalid default job timeout", async () => {
+    clearBackend();
+    const { Hermes } = await import("../hermes.ts");
+    const backend = new MockBackend();
+    const hermes = Hermes({
+      manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+      backend,
+      worker: { defaultJobTimeout: "eventually" },
+    });
+
+    await assertRejects(
+      () => hermes.start(),
+      Error,
+      'Invalid timeout for job "recurring_every_job"',
+    );
+    assertEquals(backend.isListening, false);
+    assertEquals(backend.registeredRecurringJobs, []);
+    clearBackend();
+  });
+
+  await t.step(
+    "start() rejects job timeouts above the timer ceiling",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new MockBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+        backend,
+        worker: { defaultJobTimeout: 2_147_483_648 },
+      });
+
+      await assertRejects(
+        () => hermes.start(),
+        Error,
+        "~24.8 days",
+      );
+      assertEquals(backend.isListening, false);
+      assertEquals(backend.registeredRecurringJobs, []);
+      clearBackend();
     },
   );
 

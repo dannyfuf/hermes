@@ -1,4 +1,4 @@
-import type { JobPayload, PerformLaterOptions } from "./types.ts";
+import type { JobContext, JobPayload, PerformLaterOptions } from "./types.ts";
 import { getBackend } from "./backend_registry.ts";
 import { intervalToMs, parseEveryInterval } from "./schedule.ts";
 
@@ -8,8 +8,12 @@ export abstract class Job {
   abstract readonly queueName: string;
   readonly every?: string;
   readonly cron?: string;
+  readonly timeout?: string | number;
 
-  abstract perform(jobBody: unknown): Promise<unknown>;
+  abstract perform(
+    jobBody: unknown,
+    context?: JobContext,
+  ): Promise<unknown>;
 
   isRecurring(): boolean {
     return this.every !== undefined || this.cron !== undefined;
