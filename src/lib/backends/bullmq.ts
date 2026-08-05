@@ -7,7 +7,7 @@
  * import { BullMQBackend } from "@dafu/hermes/backends/bullmq";
  *
  * const hermes = Hermes({
- *   manifest: "./jobs/manifest.json",
+ *   manifest: "./jobs/main.ts",
  *   backend: BullMQBackend({ connection: { host: "localhost", port: 6379 } }),
  * });
  * ```

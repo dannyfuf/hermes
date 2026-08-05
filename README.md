@@ -1,19 +1,23 @@
 # Hermes
 
-A backend-agnostic background job processing library for TypeScript. Define jobs as
-classes, enqueue them from anywhere, and process them with pluggable backends
+A backend-agnostic background job processing library for TypeScript. Define jobs
+as classes, enqueue them from anywhere, and process them with pluggable backends
 like **Deno KV** or **Redis (BullMQ)**.
 
 ## Features
 
-- **Backend-agnostic**: Swap between Deno KV and Redis/BullMQ (or write your
-  own adapter)
+- **Backend-agnostic**: Swap between Deno KV and Redis/BullMQ (or write your own
+  adapter)
 - **Job classes**: Encapsulate job logic in typed, reusable classes
 - **Manifest-based registration**: Auto-discover jobs from a single manifest
   file
 - **Delayed jobs**: Schedule jobs to run after a specified delay
-- **Multi-queue support**: Route jobs to different queues and process them
-  independently
+- **Timeouts and cancellation**: Release stuck worker slots and cooperatively
+  abort supported I/O
+- **Priorities and retries**: BullMQ-native ordering, attempts, and backoff
+- **Queue health stats**: Inspect counts and detect unusually old active jobs
+- **Queue routing**: Route jobs by name; BullMQ processes queues independently
+  while Deno KV uses one global queue
 - **Structured logging**: JSON-formatted lifecycle events for every job
 - **Graceful shutdown**: Clean worker shutdown with configurable timeouts
 - **Deno Deploy compatible**: Works out of the box on Deno Deploy with the Deno
@@ -67,8 +71,8 @@ export class EmailJob extends Job {
 
 ### 2. Create a Manifest
 
-Export all your job classes as an array. Hermes supports both `default` and named
-`jobs` exports:
+Export all your job classes as an array. Hermes supports both `default` and
+named `jobs` exports:
 
 ```typescript
 // jobs/main.ts
@@ -98,11 +102,12 @@ const hermes = Hermes({
 await hermes.start();
 console.log("Worker is running");
 
-// Graceful shutdown
-Deno.addSignalListener("SIGINT", async () => {
+const shutdown = async () => {
   await hermes.stop();
   Deno.exit(0);
-});
+};
+Deno.addSignalListener("SIGINT", shutdown);
+Deno.addSignalListener("SIGTERM", shutdown);
 ```
 
 ### 4. Enqueue Jobs
@@ -148,17 +153,19 @@ const backend = DenoKvBackend();
 const backend = DenoKvBackend({ path: "./my-data.sqlite" });
 ```
 
-Run workers with the `--unstable-kv` flag (not needed on Deno Deploy):
+Run local workers with `--unstable-kv`. Workers that register recurring Deno KV
+jobs also require `--unstable-cron` at runtime (these flags are not needed on
+Deno Deploy):
 
 ```bash
-deno run --unstable-kv worker.ts
+deno run --unstable-kv --unstable-cron worker.ts
 ```
 
 ### Redis / BullMQ
 
-Production-grade backend powered by [BullMQ](https://docs.bullmq.io/). Supports
-concurrency, retries, and all BullMQ features. Requires a running Redis
-instance.
+Production-grade backend powered by [BullMQ](https://docs.bullmq.io/). It
+exposes concurrency, priorities, attempts/backoff, bounded retention, and queue
+statistics. Requires a running Redis instance.
 
 ```typescript
 import { BullMQBackend } from "@dafu/hermes/backends/bullmq";
@@ -171,8 +178,19 @@ const backend = BullMQBackend({
   },
   concurrency: 5, // Process up to 5 jobs concurrently per queue
   defaultQueueName: "default", // Fallback queue name
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: "exponential", delay: 1000 },
+    removeOnComplete: { count: 1000 },
+    removeOnFail: { count: 5000 },
+  },
 });
 ```
+
+BullMQ retains the most recent 1,000 completed and 5,000 failed jobs by default.
+This is a behavior change in 0.3.0 that prevents unbounded Redis growth.
+Override either value with `defaultJobOptions`; those options apply to ordinary
+and recurring jobs.
 
 ```bash
 deno run worker.ts
@@ -193,12 +211,12 @@ class MyCustomBackend implements BackendAdapter {
 
   async listen(
     handler: (payload: JobPayload) => Promise<void>,
-    options?: { queueNames?: string[] },
+    options?: { queueNames?: string[]; concurrency?: number },
   ): Promise<void> {
     // Start consuming jobs and call handler() for each one
   }
 
-  async close(): Promise<void> {
+  async close(options?: { force?: boolean }): Promise<void> {
     // Clean up connections
   }
 }
@@ -206,11 +224,14 @@ class MyCustomBackend implements BackendAdapter {
 
 ## Recurring Jobs
 
-Define jobs that run on a schedule using `every` (interval) or `cron` (expression) properties. Recurring jobs are registered automatically when `hermes.start()` is called.
+Define jobs that run on a schedule using `every` (interval) or `cron`
+(expression) properties. Recurring jobs are registered automatically when
+`hermes.start()` is called.
 
 ### Interval-based (`every`)
 
-Use `[number][unit]` format where unit is `s` (seconds), `m` (minutes), `h` (hours), or `d` (days):
+Use `[number][unit]` format where unit is `s` (seconds), `m` (minutes), `h`
+(hours), or `d` (days). Any positive integer amount is accepted by the core:
 
 ```typescript
 export class HealthCheckJob extends Job {
@@ -242,15 +263,19 @@ export class DailyReportJob extends Job {
 
 ### Backend Differences
 
-| Feature | Deno KV | BullMQ (Redis) |
-| --- | --- | --- |
-| `every` support | Minutes and above (`m`, `h`, `d`) | All units including seconds (`s`) |
-| `cron` support | Yes | Yes |
-| Deduplication | Automatic via `Deno.cron` | Automatic via `upsertJobScheduler` |
-| Overlap prevention | Built-in | Built-in |
+| Feature            | Deno KV                                                                                         | BullMQ (Redis)                                   |
+| ------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `every` support    | Cron-expressible intervals: 1–59m, 1–23h, 1–31d; exact multiples convert upward (`120s` → `2m`) | Any safe positive `s`, `m`, `h`, or `d` interval |
+| `cron` support     | Yes                                                                                             | Yes                                              |
+| Deduplication      | Automatic via `Deno.cron`                                                                       | Automatic via `upsertJobScheduler`               |
+| Overlap prevention | Built-in                                                                                        | Built-in                                         |
+| Priorities         | Ignored                                                                                         | Lower number runs first (`1`–`2^21`)             |
+| Worker concurrency | Single global KV listener; setting ignored                                                      | Configurable per queue worker                    |
+| Local runtime flag | Recurrence requires `--unstable-cron` in addition to `--unstable-kv`                            | None                                             |
 
-> **Note**: Seconds-level granularity (`s`) is only supported on BullMQ. Deno KV's
-> minimum granularity is 1 minute since `Deno.cron` has no seconds field.
+Intervals such as `90s`, `90m`, and `25h` cannot be represented by `Deno.cron`
+and fail during recurring-job registration with guidance to use BullMQ. BullMQ
+uses millisecond intervals and accepts these values directly.
 
 ## Delayed Jobs
 
@@ -264,6 +289,113 @@ await job.performLater(
   { to: "user@example.com", subject: "Welcome!", body: "Hi!" },
   { delay: 5 * 60 * 1000 },
 );
+```
+
+## Priorities
+
+Declare a default on the job or override it per enqueue. BullMQ uses lower
+numbers as higher priority (`1` through `2^21`):
+
+```typescript
+export class PaymentJob extends Job {
+  jobName = "process_payment";
+  queueName = "payments";
+  priority = 5;
+
+  async perform(jobBody: unknown): Promise<void> {
+    // ...
+  }
+}
+
+await new PaymentJob().performLater(payload, { priority: 1 });
+```
+
+The priority is also applied to recurring jobs. Deno KV accepts the portable API
+but ignores priority.
+
+## Execution Timeouts and Cooperative Cancellation
+
+> **Production recommendation:** always set `worker.defaultJobTimeout` or a
+> per-job `timeout`. Without one, a permanently pending `perform()` can occupy a
+> worker slot forever.
+
+Timeouts may be milliseconds or duration strings using the `every` grammar:
+
+```typescript
+import type { JobContext } from "@dafu/hermes";
+
+export class FetchReportJob extends Job {
+  jobName = "fetch_report";
+  queueName = "reports";
+  timeout = "30s";
+
+  async perform(_body: unknown, context?: JobContext): Promise<void> {
+    await fetch("https://example.com/report", { signal: context?.signal });
+  }
+}
+
+const hermes = Hermes({
+  manifest: "./jobs/main.ts",
+  backend,
+  worker: { defaultJobTimeout: "2m" },
+});
+```
+
+Resolved timeouts must not exceed `2_147_483_647` milliseconds (about 24.8
+days), the maximum reliable JavaScript timer delay. Hermes validates every job
+timeout before registering recurring schedules or starting listeners.
+
+A job's `timeout` overrides `defaultJobTimeout`. On expiry Hermes aborts the
+context signal, logs `job_failed`, and throws an error whose `name` is
+`"JobTimeoutError"`; the backend then applies its normal retry/failure policy.
+The error class is intentionally internal, so detect it by name.
+
+The timeout always releases the Hermes/BullMQ worker slot. It cannot forcibly
+stop JavaScript already running inside `perform()`: pass `context.signal` to
+APIs such as `fetch` or database clients that support `AbortSignal` so the
+underlying I/O is actually cancelled. Existing jobs that implement only
+`perform(jobBody)` remain valid.
+
+## Monitoring Queue Health
+
+After `start()`, BullMQ-backed instances expose one stats entry per manifest
+queue:
+
+```typescript
+const queues = await hermes.stats();
+const unhealthy = queues.find(
+  (queue) => (queue.oldestActiveJobAgeMs ?? 0) > 5 * 60_000,
+);
+if (unhealthy) throw new Error(`Stuck queue: ${unhealthy.queueName}`);
+```
+
+Each entry includes `waiting`, `active`, `delayed`, `failed`, and `completed`
+counts plus `oldestActiveJobAgeMs` when an active job has a processing
+timestamp. For BullMQ, `waiting` is the full ready backlog: ordinary waiting
+jobs plus prioritized jobs. The optional `prioritized` count exposes the raw
+prioritized subset. Calling `stats()` before `start()`, after `stop()`, or with
+a backend such as Deno KV that does not implement the optional capability throws
+a clear error.
+
+## Graceful Shutdown
+
+`hermes.stop()` stops intake and gives in-flight work up to
+`worker.gracefulShutdownTimeout` milliseconds to finish (default: `30_000`). If
+that deadline expires, Hermes logs `worker_force_closed` and asks the backend to
+force-close. For BullMQ this returns without waiting for in-flight handlers, so
+their locks can expire and another worker can recover the jobs. `stop()` is
+idempotent. The configured shutdown timeout must be a positive safe integer no
+greater than `2_147_483_647` milliseconds (about 24.8 days).
+
+Install both termination handlers in worker processes:
+
+```typescript
+const shutdown = async () => {
+  await hermes.stop();
+  Deno.exit(0);
+};
+Deno.addSignalListener("SIGINT", shutdown);
+Deno.addSignalListener("SIGTERM", shutdown);
 ```
 
 ## Multi-Queue Architecture
@@ -296,20 +428,23 @@ export class ReportJob extends Job {
 
 Hermes automatically extracts all unique queue names from the manifest and
 listens on each one. With the BullMQ backend, each queue gets its own dedicated
-BullMQ Worker for true multi-queue processing.
+BullMQ Worker for true multi-queue processing. Deno KV has one global queue and
+cannot filter by `queueName`.
 
 ## API Reference
 
 ### `Hermes(params)`
 
-Creates a Hermes instance. Returns an object with `start()` and `stop()`
-methods.
+Creates a Hermes instance. Returns an object with `start()`, `stop()`, and
+`stats()` methods.
 
 ```typescript
 const hermes = Hermes({
   manifest: "./jobs/main.ts", // Path to your jobs manifest file
   backend: DenoKvBackend(), // A BackendAdapter instance
   worker: {
+    concurrency: 5,
+    defaultJobTimeout: "2m",
     gracefulShutdownTimeout: 10000, // Shutdown timeout in ms (default: 30000)
   },
 });
@@ -320,8 +455,8 @@ await hermes.stop(); // Gracefully shut down
 
 ### `configure({ backend })`
 
-Sets the global backend for enqueuing jobs without starting a worker. Use this in
-processes that only enqueue (e.g., a web server):
+Sets the global backend for enqueuing jobs without starting a worker. Use this
+in processes that only enqueue (e.g., a web server):
 
 ```typescript
 import { configure, DenoKvBackend } from "@dafu/hermes";
@@ -334,32 +469,41 @@ configure({ backend: DenoKvBackend() });
 
 Base class for all jobs.
 
-| Property / Method | Type | Description |
-| --- | --- | --- |
-| `jobName` | `string` (abstract) | Unique identifier for the job type |
-| `queueName` | `string` (abstract) | Queue this job is dispatched to |
-| `every` | `string?` | Interval schedule, e.g. `"5m"`, `"1h"`, `"7d"` |
-| `cron` | `string?` | Cron expression, e.g. `"0 9 * * 1-5"` |
-| `perform(jobBody)` | `Promise<unknown>` (abstract) | The work the job does |
-| `performLater(jobBody?, opts?)` | `Promise<void>` | Enqueue the job for async processing |
-| `isRecurring()` | `boolean` | Whether the job has a recurring schedule |
+| Property / Method               | Type                          | Description                                                   |
+| ------------------------------- | ----------------------------- | ------------------------------------------------------------- |
+| `jobName`                       | `string` (abstract)           | Unique identifier for the job type                            |
+| `queueName`                     | `string` (abstract)           | Queue this job is dispatched to                               |
+| `every`                         | `string?`                     | Interval schedule, e.g. `"5m"`, `"1h"`, `"7d"`                |
+| `cron`                          | `string?`                     | Cron expression, e.g. `"0 9 * * 1-5"`                         |
+| `timeout`                       | `string \| number?`           | Per-job execution timeout; overrides the worker default       |
+| `priority`                      | `number?`                     | Default BullMQ priority (lower is higher)                     |
+| `perform(jobBody, context?)`    | `Promise<unknown>` (abstract) | The work the job does; `context.signal` supports cancellation |
+| `performLater(jobBody?, opts?)` | `Promise<void>`               | Enqueue the job for async processing                          |
+| `isRecurring()`                 | `boolean`                     | Whether the job has a recurring schedule                      |
 
 ### `DenoKvBackend(options?)`
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
+| Option | Type     | Default     | Description                       |
+| ------ | -------- | ----------- | --------------------------------- |
 | `path` | `string` | `undefined` | Custom path for the KV store file |
 
 ### `BullMQBackend(options)`
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `connection.host` | `string` | `undefined` | Redis host |
-| `connection.port` | `number` | `undefined` | Redis port |
-| `connection.password` | `string` | `undefined` | Redis password |
-| `connection.url` | `string` | `undefined` | Redis connection URL |
-| `concurrency` | `number` | `1` | Max concurrent jobs per queue worker |
-| `defaultQueueName` | `string` | `"default"` | Fallback queue when none is specified |
+| Option                               | Type                                                | Default           | Description                           |
+| ------------------------------------ | --------------------------------------------------- | ----------------- | ------------------------------------- |
+| `connection.host`                    | `string`                                            | `undefined`       | Redis host                            |
+| `connection.port`                    | `number`                                            | `undefined`       | Redis port                            |
+| `connection.password`                | `string`                                            | `undefined`       | Redis password                        |
+| `connection.url`                     | `string`                                            | `undefined`       | Redis connection URL                  |
+| `concurrency`                        | `number`                                            | `1`               | Max concurrent jobs per queue worker  |
+| `defaultQueueName`                   | `string`                                            | `"default"`       | Fallback queue when none is specified |
+| `defaultJobOptions.attempts`         | `number`                                            | `1`               | Total BullMQ processing attempts      |
+| `defaultJobOptions.backoff`          | `{ type: "fixed" \| "exponential"; delay: number }` | `undefined`       | Retry delay policy                    |
+| `defaultJobOptions.removeOnComplete` | `boolean \| number \| { age?, count? }`             | `{ count: 1000 }` | Completed-job retention               |
+| `defaultJobOptions.removeOnFail`     | `boolean \| number \| { age?, count? }`             | `{ count: 5000 }` | Failed-job retention                  |
+
+`worker.concurrency` passed to `Hermes()` takes precedence over the backend's
+`concurrency`; the fallback is `1`.
 
 ### Types
 
@@ -375,13 +519,32 @@ type JobPayload = {
 // Options for performLater
 type PerformLaterOptions = {
   delay?: number; // Delay in milliseconds
+  priority?: number; // BullMQ: lower values run first
+};
+
+type JobContext = {
+  signal: AbortSignal;
 };
 
 // Worker configuration
 type WorkerConfig = {
   concurrency?: number;
-  gracefulShutdownTimeout?: number; // Default: 30000ms
+  defaultJobTimeout?: string | number; // Maximum: 2_147_483_647ms
+  gracefulShutdownTimeout?: number; // Default: 30000ms; same maximum
 };
+
+interface QueueStats {
+  queueName: string;
+  counts: {
+    waiting: number;
+    active: number;
+    delayed: number;
+    failed: number;
+    completed: number;
+    prioritized?: number; // Raw BullMQ subset included in waiting
+  };
+  oldestActiveJobAgeMs?: number;
+}
 
 // Main configuration
 type HermesParams = {
@@ -404,19 +567,25 @@ Hermes emits structured JSON logs for all job lifecycle events:
 
 ### Event Types
 
-| Event | Description |
-| --- | --- |
-| `worker_started` | Worker is listening for jobs |
-| `job_received` | A job payload was dequeued |
-| `job_started` | Job `perform()` is being called |
-| `job_succeeded` | Job completed without errors |
-| `job_failed` | Job threw an error (includes error message and duration) |
-| `job_skipped` | Job was skipped (e.g., queue filtering) |
-| `unknown_job` | Received a job with an unregistered `jobName` |
-| `recurring_job_registered` | A recurring job schedule was registered at startup |
-| `recurring_job_skipped` | A recurring job schedule registration was skipped |
-| `worker_stopping` | Shutdown signal received |
-| `worker_stopped` | Worker has fully shut down |
+| Event                      | Description                                                            |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `worker_started`           | Worker is listening for jobs                                           |
+| `job_received`             | A job payload was dequeued                                             |
+| `job_started`              | Job `perform()` is being called                                        |
+| `job_succeeded`            | Job completed without errors                                           |
+| `job_failed`               | Job threw an error (includes error message and duration)               |
+| `worker_job_failed`        | BullMQ marked a job attempt failed (includes job ID and attempts made) |
+| `job_stalled`              | BullMQ detected a stalled job                                          |
+| `job_skipped`              | Job was skipped (e.g., queue filtering)                                |
+| `unknown_job`              | Received a job with an unregistered `jobName`                          |
+| `recurring_job_registered` | A recurring job schedule was registered at startup                     |
+| `recurring_job_skipped`    | A recurring job schedule registration was skipped                      |
+| `worker_error`             | A BullMQ worker connection/runtime error occurred                      |
+| `queue_error`              | A BullMQ enqueue-side queue connection error occurred                  |
+| `worker_closed`            | A BullMQ queue worker closed                                           |
+| `worker_stopping`          | `hermes.stop()` began                                                  |
+| `worker_force_closed`      | The graceful shutdown deadline elapsed                                 |
+| `worker_stopped`           | Worker has fully shut down                                             |
 
 ## Error Handling
 
@@ -429,8 +598,11 @@ Hermes emits structured JSON logs for all job lifecycle events:
 - **Unknown job**: If a queued message references an unregistered `jobName`, the
   worker logs an `unknown_job` event and skips it.
 - **Job execution failure**: If `perform()` throws, the error is logged with the
-  `job_failed` event (including duration) and re-thrown to the backend, which can
-  handle retries if supported.
+  `job_failed` event (including duration) and re-thrown to the backend, which
+  can handle retries if supported.
+- **Job timeout**: Hermes aborts the job context, logs and rethrows a
+  `JobTimeoutError`, and frees the worker slot. Configure attempts/backoff on
+  BullMQ if timed-out work should retry.
 
 ## Running the Examples
 

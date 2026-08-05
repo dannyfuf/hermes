@@ -6,7 +6,7 @@
  * import { Hermes, DenoKvBackend } from "@dafu/hermes";
  *
  * const hermes = Hermes({
- *   manifest: "./jobs/manifest.json",
+ *   manifest: "./jobs/main.ts",
  *   backend: DenoKvBackend(),
  * });
  * await hermes.start();
