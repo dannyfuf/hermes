@@ -32,23 +32,47 @@ Deno.test("parseEveryInterval", async (t) => {
   });
 
   await t.step("throws on invalid format", () => {
-    assertThrows(() => parseEveryInterval("5x"), Error, "Invalid every interval");
-    assertThrows(() => parseEveryInterval("abc"), Error, "Invalid every interval");
-    assertThrows(() => parseEveryInterval("5ss"), Error, "Invalid every interval");
+    assertThrows(
+      () => parseEveryInterval("5x"),
+      Error,
+      "Invalid every interval",
+    );
+    assertThrows(
+      () => parseEveryInterval("abc"),
+      Error,
+      "Invalid every interval",
+    );
+    assertThrows(
+      () => parseEveryInterval("5ss"),
+      Error,
+      "Invalid every interval",
+    );
     assertThrows(() => parseEveryInterval(""), Error, "Invalid every interval");
-    assertThrows(() => parseEveryInterval("m5"), Error, "Invalid every interval");
-    assertThrows(() => parseEveryInterval("-5s"), Error, "Invalid every interval");
+    assertThrows(
+      () => parseEveryInterval("m5"),
+      Error,
+      "Invalid every interval",
+    );
+    assertThrows(
+      () => parseEveryInterval("-5s"),
+      Error,
+      "Invalid every interval",
+    );
   });
 
   await t.step("throws on zero value", () => {
     assertThrows(() => parseEveryInterval("0s"), Error, "positive integer");
   });
 
-  await t.step("throws on values exceeding max", () => {
-    assertThrows(() => parseEveryInterval("60s"), Error, 'Maximum value for "s" is 59');
-    assertThrows(() => parseEveryInterval("60m"), Error, 'Maximum value for "m" is 59');
-    assertThrows(() => parseEveryInterval("24h"), Error, 'Maximum value for "h" is 23');
-    assertThrows(() => parseEveryInterval("366d"), Error, 'Maximum value for "d" is 365');
+  await t.step("accepts uncapped positive amounts", () => {
+    assertEquals(parseEveryInterval("60s"), { value: 60, unit: "s" });
+    assertEquals(parseEveryInterval("60m"), { value: 60, unit: "m" });
+    assertEquals(parseEveryInterval("24h"), { value: 24, unit: "h" });
+    assertEquals(parseEveryInterval("366d"), { value: 366, unit: "d" });
+    assertEquals(
+      intervalToMs(parseEveryInterval("120s")),
+      120_000,
+    );
   });
 });
 
@@ -72,6 +96,14 @@ Deno.test("intervalToMs", async (t) => {
     assertEquals(intervalToMs({ value: 1, unit: "d" }), 86_400_000);
     assertEquals(intervalToMs({ value: 7, unit: "d" }), 604_800_000);
   });
+
+  await t.step("rejects intervals that overflow safe integers", () => {
+    assertThrows(
+      () => intervalToMs({ value: Number.MAX_SAFE_INTEGER, unit: "d" }),
+      Error,
+      "exceeds the maximum safe millisecond value",
+    );
+  });
 });
 
 Deno.test("intervalToCronSchedule", async (t) => {
@@ -89,15 +121,42 @@ Deno.test("intervalToCronSchedule", async (t) => {
 
   await t.step("converts days to cron schedule", () => {
     assertEquals(intervalToCronSchedule({ value: 1, unit: "d" }), {
-      day: { every: 1 },
+      dayOfMonth: { every: 1 },
     });
   });
 
-  await t.step("throws for seconds unit", () => {
+  await t.step("converts exact multiples to coarser units", () => {
+    assertEquals(intervalToCronSchedule({ value: 120, unit: "s" }), {
+      minute: { every: 2 },
+    });
+    assertEquals(intervalToCronSchedule({ value: 120, unit: "m" }), {
+      hour: { every: 2 },
+    });
+    assertEquals(intervalToCronSchedule({ value: 48, unit: "h" }), {
+      dayOfMonth: { every: 2 },
+    });
+  });
+
+  await t.step("throws for intervals Deno.cron cannot represent", () => {
     assertThrows(
-      () => intervalToCronSchedule({ value: 5, unit: "s" }),
+      () => intervalToCronSchedule({ value: 90, unit: "s" }),
       Error,
-      "Seconds-level intervals are not supported on the Deno KV backend",
+      "Deno KV recurrence supports",
+    );
+    assertThrows(
+      () => intervalToCronSchedule({ value: 90, unit: "m" }),
+      Error,
+      "Deno KV recurrence supports",
+    );
+    assertThrows(
+      () => intervalToCronSchedule({ value: 25, unit: "h" }),
+      Error,
+      "Deno KV recurrence supports",
+    );
+    assertThrows(
+      () => intervalToCronSchedule({ value: 32, unit: "d" }),
+      Error,
+      "Use the BullMQ backend for arbitrary intervals",
     );
   });
 });

@@ -22,13 +22,6 @@ const MS_PER_UNIT: Record<TimeUnit, number> = {
   d: 86_400_000,
 };
 
-const MAX_VALUES: Record<TimeUnit, number> = {
-  s: 59,
-  m: 59,
-  h: 23,
-  d: 365,
-};
-
 /** Parse an interval string like "5m" or "24h" into an {@link EveryInterval}. */
 export function parseEveryInterval(str: string): EveryInterval {
   const match = str.match(EVERY_PATTERN);
@@ -47,42 +40,65 @@ export function parseEveryInterval(str: string): EveryInterval {
     );
   }
 
-  if (value > MAX_VALUES[unit]) {
-    throw new Error(
-      `Invalid every interval "${str}". Maximum value for "${unit}" is ${MAX_VALUES[unit]}.`,
-    );
-  }
-
   return { value, unit };
 }
 
 /** Convert an {@link EveryInterval} to milliseconds. */
 export function intervalToMs(interval: EveryInterval): number {
-  return interval.value * MS_PER_UNIT[interval.unit];
+  const milliseconds = interval.value * MS_PER_UNIT[interval.unit];
+  if (!Number.isSafeInteger(milliseconds)) {
+    throw new Error(
+      `Every interval "${interval.value}${interval.unit}" exceeds the maximum safe millisecond value.`,
+    );
+  }
+  return milliseconds;
 }
 
 /**
  * Convert an EveryInterval to a Deno.cron CronSchedule object.
- * Throws if unit is 's' (seconds not supported by Deno.cron).
+ * Converts exact multiples to a coarser unit when Deno.cron cannot represent
+ * the original amount and throws for arbitrary unsupported intervals.
  *
  * Examples:
  *   "5m"  → { minute: { every: 5 } }
  *   "2h"  → { hour: { every: 2 } }
- *   "1d"  → { day: { every: 1 } }
+ *   "1d"  → { dayOfMonth: { every: 1 } }
  */
 export function intervalToCronSchedule(
   interval: EveryInterval,
 ): Record<string, { every: number }> {
-  if (interval.unit === "s") {
+  let { value, unit } = interval;
+
+  if (unit === "s" && value % 60 === 0) {
+    value /= 60;
+    unit = "m";
+  }
+  if (unit === "m" && value > 59 && value % 60 === 0) {
+    value /= 60;
+    unit = "h";
+  }
+  if (unit === "h" && value > 23 && value % 24 === 0) {
+    value /= 24;
+    unit = "d";
+  }
+
+  const withinDenoCronRange = (unit === "m" && value <= 59) ||
+    (unit === "h" && value <= 23) ||
+    (unit === "d" && value <= 31);
+  if (!withinDenoCronRange) {
     throw new Error(
-      `Seconds-level intervals are not supported on the Deno KV backend. ` +
-        `Minimum granularity is 1 minute (e.g., "1m"). Use the BullMQ backend for sub-minute intervals.`,
+      `Deno KV recurrence supports 1-59 minute, 1-23 hour, and 1-31 day intervals, ` +
+        `with exact unit conversions; cannot represent "${interval.value}${interval.unit}". ` +
+        `Use the BullMQ backend for arbitrary intervals.`,
     );
   }
 
-  const mapping: Record<string, string> = { m: "minute", h: "hour", d: "day" };
-  const field = mapping[interval.unit];
-  return { [field]: { every: interval.value } };
+  const mapping: Record<string, string> = {
+    m: "minute",
+    h: "hour",
+    d: "dayOfMonth",
+  };
+  return { [mapping[unit]]: { every: value } };
 }
 
 const CRON_FIELD_COUNT_MIN = 5;

@@ -59,7 +59,13 @@ class TDenoKvBackend implements BackendAdapter {
       throw new Error("Recurring job must have either 'every' or 'cron'");
     }
 
-    Deno.cron(`hermes:${config.jobName}`, schedule, async () => {
+    const cronName = `hermes-${
+      config.jobName.replace(
+        /[^A-Za-z0-9_-]/g,
+        "-",
+      )
+    }`;
+    Deno.cron(cronName, schedule, async () => {
       await this.enqueue(payload);
     });
   }

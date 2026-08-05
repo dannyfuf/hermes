@@ -145,7 +145,25 @@ Deno.test({
 });
 
 Deno.test({
-  name: "DenoKvBackend: registerRecurringJob throws for seconds interval",
+  name: "DenoKvBackend: registers recurrence with a cron-safe name",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+    const jobName = `namespace:job/${crypto.randomUUID().slice(0, 8)}`;
+
+    try {
+      await backend.registerRecurringJob!({
+        jobName,
+        queueName: "default",
+        every: "1m",
+      });
+    } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: registerRecurringJob throws for unsupported interval",
   async fn() {
     const { backend, cleanup } = await createIsolatedBackend();
 
@@ -155,10 +173,10 @@ Deno.test({
           backend.registerRecurringJob!({
             jobName: "seconds_job",
             queueName: "default",
-            every: "5s",
+            every: "90s",
           }),
         Error,
-        "Seconds-level intervals are not supported on the Deno KV backend",
+        "Deno KV recurrence supports",
       );
     } finally {
       await cleanup();
