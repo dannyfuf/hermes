@@ -23,6 +23,7 @@ import type {
 } from "../backend.ts";
 import type { JobPayload } from "../types.ts";
 import { intervalToMs, parseEveryInterval } from "../schedule.ts";
+import { Logger } from "../logger.ts";
 
 /** Options for the BullMQ backend adapter. */
 export interface BullMQBackendOptions {
@@ -47,12 +48,11 @@ class TBullMQBackend implements BackendAdapter {
 
   private getOrCreateQueue(queueName: string): Queue {
     if (!this.queues.has(queueName)) {
-      this.queues.set(
-        queueName,
-        new Queue(queueName, {
-          connection: this.options.connection,
-        }),
-      );
+      const queue = new Queue(queueName, {
+        connection: this.options.connection,
+      });
+      queue.on("error", (error: Error) => Logger.queueError(queueName, error));
+      this.queues.set(queueName, queue);
     }
     return this.queues.get(queueName)!;
   }
@@ -86,6 +86,24 @@ class TBullMQBackend implements BackendAdapter {
           concurrency: this.options.concurrency ?? 1,
         },
       );
+      worker.on("error", (error: Error) => {
+        Logger.workerError(queueName, error);
+      });
+      worker.on("failed", (job: BullMQJob | undefined, error: Error) => {
+        Logger.workerJobFailed(
+          queueName,
+          job?.name,
+          job?.id,
+          job?.attemptsMade,
+          error,
+        );
+      });
+      worker.on("stalled", (jobId: string) => {
+        Logger.jobStalled(queueName, jobId);
+      });
+      worker.on("closed", () => {
+        Logger.workerClosed(queueName);
+      });
       this.workers.set(queueName, worker);
     }
   }

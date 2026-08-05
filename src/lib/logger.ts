@@ -107,6 +107,59 @@ export class Logger {
     });
   }
 
+  static workerError(queueName: string, error: unknown): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "worker_error",
+      queueName,
+      error: this.errorMessage(error),
+    });
+  }
+
+  static workerJobFailed(
+    queueName: string,
+    jobName: string | undefined,
+    jobId: string | undefined,
+    attemptsMade: number | undefined,
+    error: unknown,
+  ): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "worker_job_failed",
+      queueName,
+      jobName,
+      jobId,
+      attemptsMade,
+      error: this.errorMessage(error),
+    });
+  }
+
+  static jobStalled(queueName: string, jobId: string): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "job_stalled",
+      queueName,
+      jobId,
+    });
+  }
+
+  static workerClosed(queueName: string): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "worker_closed",
+      queueName,
+    });
+  }
+
+  static queueError(queueName: string, error: unknown): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "queue_error",
+      queueName,
+      error: this.errorMessage(error),
+    });
+  }
+
   static recurringJobRegistered(jobName: string, schedule: string): void {
     this.log({
       timestamp: this.formatTimestamp(),
@@ -159,5 +212,9 @@ export class Logger {
 
   private static log(event: LogEvent): void {
     console.log(JSON.stringify(event));
+  }
+
+  private static errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }
