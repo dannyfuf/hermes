@@ -1,7 +1,47 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { clearBackend } from "../backend_registry.ts";
 import { MockBackend } from "./helpers/mock_backend.ts";
-import type { BackendAdapter } from "../backend.ts";
+import type {
+  BackendAdapter,
+  RecurringJobConfig,
+} from "../backend.ts";
+
+class HangingCloseBackend extends MockBackend {
+  override close(options?: { force?: boolean }): Promise<void> {
+    this.closeOptions.push(options);
+    if (options?.force) return Promise.resolve();
+    return new Promise(() => {});
+  }
+}
+
+class DeferredRecurringBackend extends MockBackend {
+  readonly registrationStarted: Promise<void>;
+  private resolveRegistrationStarted: () => void = () => {};
+  private readonly registrationRelease: Promise<void>;
+  private resolveRegistrationRelease: () => void = () => {};
+
+  constructor() {
+    super();
+    this.registrationStarted = new Promise((resolve) => {
+      this.resolveRegistrationStarted = resolve;
+    });
+    this.registrationRelease = new Promise((resolve) => {
+      this.resolveRegistrationRelease = resolve;
+    });
+  }
+
+  override async registerRecurringJob(
+    config: RecurringJobConfig,
+  ): Promise<void> {
+    await super.registerRecurringJob(config);
+    this.resolveRegistrationStarted();
+    await this.registrationRelease;
+  }
+
+  releaseRegistration(): void {
+    this.resolveRegistrationRelease();
+  }
+}
 
 Deno.test("Hermes", async (t) => {
   await t.step("configure() sets global backend", async () => {
@@ -63,6 +103,39 @@ Deno.test("Hermes", async (t) => {
     assertEquals(closeCalled, true);
     clearBackend();
   });
+
+  await t.step(
+    "stop() force-closes after the graceful timeout and is idempotent",
+    async () => {
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new HangingCloseBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+        backend,
+        worker: { gracefulShutdownTimeout: 10 },
+      });
+      const logEntries: Record<string, unknown>[] = [];
+      const originalLog = console.log;
+      console.log = (message: string) => {
+        logEntries.push(JSON.parse(message));
+      };
+
+      try {
+        await Promise.all([hermes.stop(), hermes.stop()]);
+      } finally {
+        console.log = originalLog;
+      }
+
+      assertEquals(backend.closeOptions, [undefined, { force: true }]);
+      assertEquals(logEntries.map((entry) => entry.event), [
+        "worker_stopping",
+        "worker_force_closed",
+        "worker_stopped",
+      ]);
+      assertEquals(logEntries[1].gracefulShutdownTimeoutMs, 10);
+      clearBackend();
+    },
+  );
 
   await t.step(
     "start() loads manifest, builds job registry, and starts worker",
@@ -130,6 +203,84 @@ Deno.test("Hermes", async (t) => {
       );
       assertEquals(backend.isListening, false);
       assertEquals(backend.registeredRecurringJobs, []);
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "start() rejects invalid graceful shutdown timeouts before recurrence registration",
+    async () => {
+      const invalidTimeouts = [0, -1, 1.5, 2_147_483_648, Number.NaN];
+
+      for (const gracefulShutdownTimeout of invalidTimeouts) {
+        clearBackend();
+        const { Hermes } = await import("../hermes.ts");
+        const backend = new MockBackend();
+        const hermes = Hermes({
+          manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+          backend,
+          worker: { gracefulShutdownTimeout },
+        });
+
+        await assertRejects(
+          () => hermes.start(),
+          Error,
+          "Invalid worker.gracefulShutdownTimeout",
+        );
+        assertEquals(backend.isListening, false);
+        assertEquals(backend.registeredRecurringJobs, []);
+      }
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "a second concurrent or duplicate start() fails fast",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new MockBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+        backend,
+      });
+
+      const firstStart = hermes.start();
+      await assertRejects(
+        () => hermes.start(),
+        Error,
+        "already started",
+      );
+      await firstStart;
+      await assertRejects(
+        () => hermes.start(),
+        Error,
+        "already started",
+      );
+      await hermes.stop();
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "stop() during start() prevents the worker from listening",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new DeferredRecurringBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+        backend,
+      });
+
+      const startPromise = hermes.start();
+      await backend.registrationStarted;
+      const stopPromise = hermes.stop();
+      backend.releaseRegistration();
+
+      await Promise.all([startPromise, stopPromise]);
+      assertEquals(backend.isListening, false);
+      assertEquals(backend.closeOptions, [undefined]);
       clearBackend();
     },
   );

@@ -10,6 +10,7 @@ export class MockBackend implements BackendAdapter {
   registeredRecurringJobs: RecurringJobConfig[] = [];
   removedRecurringJobs: string[] = [];
   listenOptions: { queueNames?: string[] } | undefined = undefined;
+  closeOptions: ({ force?: boolean } | undefined)[] = [];
   private handler: ((payload: JobPayload) => Promise<void>) | null = null;
 
   // deno-lint-ignore require-await
@@ -26,7 +27,8 @@ export class MockBackend implements BackendAdapter {
     this.listenOptions = options;
   }
 
-  close(): Promise<void> {
+  close(options?: { force?: boolean }): Promise<void> {
+    this.closeOptions.push(options);
     this.handler = null;
     return Promise.resolve();
   }

@@ -70,7 +70,7 @@ class TDenoKvBackend implements BackendAdapter {
     });
   }
 
-  close(): Promise<void> {
+  close(_options?: { force?: boolean }): Promise<void> {
     if (this.kv) {
       this.kv.close();
       this.kv = null;

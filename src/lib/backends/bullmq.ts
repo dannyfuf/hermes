@@ -41,6 +41,9 @@ class TBullMQBackend implements BackendAdapter {
   private queues: Map<string, Queue> = new Map();
   private workers: Map<string, Worker> = new Map();
   private options: BullMQBackendOptions;
+  private activeJobs = 0;
+  private activeJobsFinishedResolvers: Array<() => void> = [];
+  private closed = false;
 
   constructor(options: BullMQBackendOptions) {
     this.options = options;
@@ -66,7 +69,6 @@ class TBullMQBackend implements BackendAdapter {
     });
   }
 
-  // deno-lint-ignore require-await
   async listen(
     handler: (payload: JobPayload) => Promise<void>,
     options?: { queueNames?: string[] },
@@ -76,10 +78,27 @@ class TBullMQBackend implements BackendAdapter {
     ];
 
     for (const queueName of queueNames) {
+      const existingWorker = this.workers.get(queueName);
+      if (existingWorker) {
+        await existingWorker.close();
+      }
+
       const worker = new Worker(
         queueName,
         async (job: BullMQJob) => {
-          await handler(job.data as JobPayload);
+          this.activeJobs += 1;
+          try {
+            await handler(job.data as JobPayload);
+          } finally {
+            this.activeJobs -= 1;
+            if (this.activeJobs === 0) {
+              for (
+                const resolve of this.activeJobsFinishedResolvers.splice(0)
+              ) {
+                resolve();
+              }
+            }
+          }
         },
         {
           connection: this.options.connection,
@@ -131,17 +150,29 @@ class TBullMQBackend implements BackendAdapter {
     });
   }
 
-  async close(): Promise<void> {
-    const closePromises: Promise<void>[] = [];
-    for (const [_, queue] of this.queues) {
-      closePromises.push(queue.close());
+  async close(options?: { force?: boolean }): Promise<void> {
+    this.closed = true;
+    const workers = Array.from(this.workers.values());
+    await Promise.all(workers.map((worker) => worker.pause(true)));
+    if (!options?.force) {
+      await this.waitForActiveJobs();
     }
-    for (const [_, worker] of this.workers) {
-      closePromises.push(worker.close());
-    }
-    await Promise.all(closePromises);
-    this.queues.clear();
+    await Promise.all(
+      workers.map((worker) => worker.close(options?.force)),
+    );
     this.workers.clear();
+
+    await Promise.all(
+      Array.from(this.queues.values()).map((queue) => queue.close()),
+    );
+    this.queues.clear();
+  }
+
+  private waitForActiveJobs(): Promise<void> {
+    if (this.activeJobs === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.activeJobsFinishedResolvers.push(resolve);
+    });
   }
 }
 

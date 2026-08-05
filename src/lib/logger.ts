@@ -107,6 +107,14 @@ export class Logger {
     });
   }
 
+  static workerForceClosed(gracefulShutdownTimeoutMs: number): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "worker_force_closed",
+      gracefulShutdownTimeoutMs,
+    });
+  }
+
   static workerError(queueName: string, error: unknown): void {
     this.log({
       timestamp: this.formatTimestamp(),

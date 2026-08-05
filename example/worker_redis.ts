@@ -11,3 +11,11 @@ const hermes = Hermes({
 
 await hermes.start();
 console.log("Hermes is running (Redis/BullMQ backend)");
+
+const shutdown = async (): Promise<void> => {
+  await hermes.stop();
+  Deno.exit(0);
+};
+
+Deno.addSignalListener("SIGINT", shutdown);
+Deno.addSignalListener("SIGTERM", shutdown);

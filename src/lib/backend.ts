@@ -31,10 +31,8 @@ export interface BackendAdapter {
     options?: { queueNames?: string[] },
   ): Promise<void>;
 
-  /**
-   * Gracefully shut down the backend connection.
-   */
-  close(): Promise<void>;
+  /** Shut down the backend, optionally without waiting for in-flight work. */
+  close(options?: { force?: boolean }): Promise<void>;
 
   /**
    * Register a recurring job schedule. Optional — not all backends must implement.

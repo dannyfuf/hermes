@@ -4,6 +4,18 @@
 import { assertEquals } from "@std/assert";
 import type { JobPayload } from "../../types.ts";
 
+async function waitFor(
+  condition: () => boolean | Promise<boolean>,
+  message: string,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await condition())) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 async function checkRedis(): Promise<boolean> {
   try {
     const conn = await Deno.connect({ hostname: "127.0.0.1", port: 6379 });
@@ -173,6 +185,44 @@ Deno.test({
 });
 
 Deno.test({
+  name: "BullMQBackend: replaces an existing worker without leaking it",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_duplicate_listen`;
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+    let firstHandlerCalls = 0;
+    let secondHandlerCalls = 0;
+
+    await backend.listen(async () => {
+      firstHandlerCalls += 1;
+      await Promise.resolve();
+    }, { queueNames: [queueName] });
+    await backend.listen(async () => {
+      secondHandlerCalls += 1;
+      await Promise.resolve();
+    }, { queueNames: [queueName] });
+    await backend.enqueue({
+      jobName: "duplicate_listen_job",
+      queueName,
+      jobBody: null,
+    });
+
+    await waitFor(
+      () => secondHandlerCalls === 1,
+      "Replacement worker did not process the job",
+    );
+    assertEquals(firstHandlerCalls, 0);
+    assertEquals(secondHandlerCalls, 1);
+    await backend.close();
+  },
+});
+
+Deno.test({
   name: "BullMQBackend: registers and executes recurring job with every",
   ignore: !redisAvailable,
   sanitizeOps: false,
@@ -249,6 +299,51 @@ Deno.test({
     });
 
     await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: force close returns with a hung job in flight",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_force_close`;
+    let resolveStarted: () => void;
+    const started = new Promise<void>((resolve) => resolveStarted = resolve);
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+    await backend.listen(async () => {
+      resolveStarted();
+      await new Promise(() => {});
+    }, { queueNames: [queueName] });
+    await backend.enqueue({
+      jobName: "hung_close_job",
+      queueName,
+      jobBody: null,
+    });
+    await started;
+
+    const gracefulClose = backend.close();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        backend.close({ force: true }),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error("Force close did not return promptly")),
+            1_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    void gracefulClose;
   },
 });
 
