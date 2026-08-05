@@ -4,6 +4,7 @@ import type { JobPayload } from "./types.ts";
 export interface EnqueueOptions {
   delay?: number;
   queueName?: string;
+  priority?: number;
 }
 
 /** Configuration for registering a recurring job schedule. */
@@ -13,6 +14,21 @@ export interface RecurringJobConfig {
   every?: string;
   cron?: string;
   jobBody?: unknown;
+  priority?: number;
+}
+
+/** Queue activity counts and the age of the oldest active job, when available. */
+export interface QueueStats {
+  queueName: string;
+  counts: {
+    waiting: number;
+    active: number;
+    delayed: number;
+    failed: number;
+    completed: number;
+    prioritized?: number;
+  };
+  oldestActiveJobAgeMs?: number;
 }
 
 /** Interface that all Hermes backend adapters must implement. */
@@ -28,7 +44,7 @@ export interface BackendAdapter {
    */
   listen(
     handler: (payload: JobPayload) => Promise<void>,
-    options?: { queueNames?: string[] },
+    options?: { queueNames?: string[]; concurrency?: number },
   ): Promise<void>;
 
   /** Shut down the backend, optionally without waiting for in-flight work. */
@@ -43,4 +59,7 @@ export interface BackendAdapter {
    * Remove a recurring job schedule. Optional — not all backends must implement.
    */
   removeRecurringJob?(jobName: string): Promise<void>;
+
+  /** Read queue health statistics. Optional — not all backends support it. */
+  getQueueStats?(queueName: string): Promise<QueueStats>;
 }

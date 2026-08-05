@@ -9,7 +9,8 @@ export class MockBackend implements BackendAdapter {
   enqueued: { payload: JobPayload; options?: EnqueueOptions }[] = [];
   registeredRecurringJobs: RecurringJobConfig[] = [];
   removedRecurringJobs: string[] = [];
-  listenOptions: { queueNames?: string[] } | undefined = undefined;
+  listenOptions: { queueNames?: string[]; concurrency?: number } | undefined =
+    undefined;
   closeOptions: ({ force?: boolean } | undefined)[] = [];
   private handler: ((payload: JobPayload) => Promise<void>) | null = null;
 
@@ -21,7 +22,7 @@ export class MockBackend implements BackendAdapter {
   // deno-lint-ignore require-await
   async listen(
     handler: (payload: JobPayload) => Promise<void>,
-    options?: { queueNames?: string[] },
+    options?: { queueNames?: string[]; concurrency?: number },
   ): Promise<void> {
     this.handler = handler;
     this.listenOptions = options;

@@ -3,6 +3,7 @@ import { clearBackend } from "../backend_registry.ts";
 import { MockBackend } from "./helpers/mock_backend.ts";
 import type {
   BackendAdapter,
+  QueueStats,
   RecurringJobConfig,
 } from "../backend.ts";
 
@@ -11,6 +12,24 @@ class HangingCloseBackend extends MockBackend {
     this.closeOptions.push(options);
     if (options?.force) return Promise.resolve();
     return new Promise(() => {});
+  }
+}
+
+class StatsBackend extends MockBackend {
+  requestedStats: string[] = [];
+
+  getQueueStats(queueName: string): Promise<QueueStats> {
+    this.requestedStats.push(queueName);
+    return Promise.resolve({
+      queueName,
+      counts: {
+        waiting: 1,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 2,
+      },
+    });
   }
 }
 
@@ -70,19 +89,23 @@ Deno.test("Hermes", async (t) => {
     clearBackend();
   });
 
-  await t.step("Hermes instance has start and stop methods", async () => {
-    const { Hermes } = await import("../hermes.ts");
-    const backend = new MockBackend();
+  await t.step(
+    "Hermes instance has start, stop, and stats methods",
+    async () => {
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new MockBackend();
 
-    const hermes = Hermes({
-      manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
-      backend,
-    });
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+        backend,
+      });
 
-    assertEquals(typeof hermes.start, "function");
-    assertEquals(typeof hermes.stop, "function");
-    clearBackend();
-  });
+      assertEquals(typeof hermes.start, "function");
+      assertEquals(typeof hermes.stop, "function");
+      assertEquals(typeof hermes.stats, "function");
+      clearBackend();
+    },
+  );
 
   await t.step("stop() calls backend.close()", async () => {
     const { Hermes } = await import("../hermes.ts");
@@ -147,6 +170,7 @@ Deno.test("Hermes", async (t) => {
       const hermes = Hermes({
         manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
         backend,
+        worker: { concurrency: 4 },
       });
 
       await hermes.start();
@@ -159,6 +183,7 @@ Deno.test("Hermes", async (t) => {
       const queueNames = backend.listenOptions?.queueNames ?? [];
       assertEquals(queueNames.includes("default"), true);
       assertEquals(queueNames.includes("priority"), true);
+      assertEquals(backend.listenOptions?.concurrency, 4);
 
       await hermes.stop();
     },
@@ -284,6 +309,83 @@ Deno.test("Hermes", async (t) => {
       clearBackend();
     },
   );
+
+  await t.step(
+    "start() passes recurring job priority to the backend",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new MockBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+        backend,
+      });
+      await hermes.start();
+
+      assertEquals(backend.registeredRecurringJobs[0].priority, 4);
+      await hermes.stop();
+      clearBackend();
+    },
+  );
+
+  await t.step("stats() reads every manifest queue after start()", async () => {
+    clearBackend();
+    const { Hermes } = await import("../hermes.ts");
+    const backend = new StatsBackend();
+    const hermes = Hermes({
+      manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+      backend,
+    });
+    await hermes.start();
+
+    const stats = await hermes.stats();
+
+    assertEquals(stats.map((entry) => entry.queueName), [
+      "default",
+      "priority",
+    ]);
+    assertEquals(backend.requestedStats, ["default", "priority"]);
+    await hermes.stop();
+    clearBackend();
+  });
+
+  await t.step("stats() rejects unsupported backends", async () => {
+    clearBackend();
+    const { Hermes } = await import("../hermes.ts");
+    const backend = new MockBackend();
+    const hermes = Hermes({
+      manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+      backend,
+    });
+    await hermes.start();
+
+    await assertRejects(
+      () => hermes.stats(),
+      Error,
+      "does not support queue stats",
+    );
+    await hermes.stop();
+    clearBackend();
+  });
+
+  await t.step("stats() rejects after stop() completes", async () => {
+    clearBackend();
+    const { Hermes } = await import("../hermes.ts");
+    const backend = new StatsBackend();
+    const hermes = Hermes({
+      manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+      backend,
+    });
+    await hermes.start();
+    await hermes.stop();
+
+    await assertRejects(
+      () => hermes.stats(),
+      Error,
+      "only available after start()",
+    );
+    clearBackend();
+  });
 
   await t.step(
     "configure() enables enqueue-only without starting worker",

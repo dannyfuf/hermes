@@ -1,8 +1,10 @@
 // BullMQ integration tests - require a running Redis instance on localhost:6379
 // These tests are skipped if Redis is not available.
 
-import { assertEquals } from "@std/assert";
-import type { JobPayload } from "../../types.ts";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import { Job } from "../../job.ts";
+import { resolveJobTimeouts, Worker as HermesWorker } from "../../worker.ts";
+import type { JobContext, JobPayload } from "../../types.ts";
 
 async function waitFor(
   condition: () => boolean | Promise<boolean>,
@@ -181,6 +183,12 @@ Deno.test({
 
     // Calling close() again should be safe (idempotent)
     await backend.close();
+
+    await assertRejects(
+      () => backend.getQueueStats!(queueName),
+      Error,
+      "backend is closed",
+    );
   },
 });
 
@@ -257,7 +265,8 @@ Deno.test({
       twoExecutions,
       new Promise<void>((_, reject) => {
         timeoutId = setTimeout(
-          () => reject(new Error("Timeout waiting for recurring job executions")),
+          () =>
+            reject(new Error("Timeout waiting for recurring job executions")),
           10000,
         ) as unknown as number;
       }),
@@ -278,6 +287,7 @@ Deno.test({
   sanitizeResources: false,
   async fn() {
     const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const { Queue } = await import("bullmq");
     const queueName = `test_bullmq_${testRunId}_recurring_cron`;
 
     const backend = BullMQBackend({
@@ -289,6 +299,7 @@ Deno.test({
       jobName: "recurring_cron_test",
       queueName,
       cron: "0 * * * *",
+      priority: 3,
     });
 
     // Upsert again should also not throw (idempotent)
@@ -296,8 +307,94 @@ Deno.test({
       jobName: "recurring_cron_test",
       queueName,
       cron: "0 * * * *",
+      priority: 3,
     });
 
+    const inspector = new Queue(queueName, {
+      connection: { host: "localhost", port: 6379 },
+    });
+    const scheduler = await inspector.getJobScheduler(
+      "hermes:recurring_cron_test",
+    );
+    assertEquals(scheduler?.template?.opts?.priority, 3);
+    await inspector.close();
+
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: timed-out job fails and frees the worker slot",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_timeout`;
+    let resolveSecond: () => void;
+    const secondProcessed = new Promise<void>((resolve) =>
+      resolveSecond = resolve
+    );
+
+    class TimeoutJob extends Job {
+      readonly jobName = "timeout_job";
+      readonly queueName = queueName;
+      override readonly timeout = 50;
+
+      perform(jobBody: unknown, _context?: JobContext): Promise<unknown> {
+        if ((jobBody as { hang?: boolean }).hang) {
+          return new Promise(() => {});
+        }
+        resolveSecond();
+        return Promise.resolve();
+      }
+    }
+
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+    // deno-lint-ignore no-explicit-any
+    const jobsMap = new Map<string, any>([["timeout_job", TimeoutJob]]);
+    await HermesWorker.start({
+      jobsMap,
+      backend,
+      queueNames: [queueName],
+      timeoutByJobName: resolveJobTimeouts(jobsMap),
+    });
+
+    await backend.enqueue({
+      jobName: "timeout_job",
+      queueName,
+      jobBody: { hang: true },
+    });
+    await backend.enqueue({
+      jobName: "timeout_job",
+      queueName,
+      jobBody: { hang: false },
+    });
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        secondProcessed,
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error("Timeout waiting for the next job")),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    await waitFor(
+      async () => (await backend.getQueueStats!(queueName)).counts.failed === 1,
+      "Timed-out job did not reach the failed state",
+    );
+
+    const stats = await backend.getQueueStats!(queueName);
+    assertEquals(stats.counts.failed, 1);
+    assertEquals(stats.counts.completed, 1);
     await backend.close();
   },
 });
@@ -344,6 +441,235 @@ Deno.test({
       clearTimeout(timeoutId);
     }
     void gracefulClose;
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: reports queue counts and oldest active job age",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_stats`;
+    let resolveStarted: () => void;
+    let releaseJob: () => void = () => {};
+    const started = new Promise<void>((resolve) => resolveStarted = resolve);
+    const release = new Promise<void>((resolve) => releaseJob = resolve);
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+    await backend.listen(async () => {
+      resolveStarted();
+      await release;
+    }, { queueNames: [queueName] });
+    await backend.enqueue({
+      jobName: "stats_job",
+      queueName,
+      jobBody: null,
+    });
+    await started;
+
+    const activeStats = await backend.getQueueStats!(queueName);
+    assertEquals(activeStats.counts.active, 1);
+    assertEquals(typeof activeStats.oldestActiveJobAgeMs, "number");
+    assert(activeStats.oldestActiveJobAgeMs! >= 0);
+
+    releaseJob();
+    await waitFor(
+      async () =>
+        (await backend.getQueueStats!(queueName)).counts.completed === 1,
+      "Stats job did not complete",
+    );
+    const completedStats = await backend.getQueueStats!(queueName);
+    assertEquals(completedStats.counts.completed, 1);
+    assertEquals(completedStats.counts.prioritized, 0);
+    assertEquals(completedStats.oldestActiveJobAgeMs, undefined);
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: includes prioritized jobs in waiting backlog stats",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_prioritized_stats`;
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+    await backend.enqueue({
+      jobName: "ordinary_waiting_job",
+      queueName,
+      jobBody: null,
+    });
+    await backend.enqueue({
+      jobName: "prioritized_waiting_job",
+      queueName,
+      jobBody: null,
+    }, { priority: 1 });
+
+    const stats = await backend.getQueueStats!(queueName);
+    assertEquals(stats.counts.waiting, 2);
+    assertEquals(stats.counts.prioritized, 1);
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: lower priority values run first",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const queueName = `test_bullmq_${testRunId}_priority`;
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+    await backend.enqueue({
+      jobName: "low_priority",
+      queueName,
+      jobBody: null,
+    }, { priority: 10 });
+    await backend.enqueue({
+      jobName: "high_priority",
+      queueName,
+      jobBody: null,
+    }, { priority: 1 });
+
+    const order: string[] = [];
+    let resolveProcessed: () => void;
+    const processed = new Promise<void>((resolve) =>
+      resolveProcessed = resolve
+    );
+    await backend.listen(async (payload) => {
+      order.push(payload.jobName);
+      if (order.length === 2) resolveProcessed();
+      await Promise.resolve();
+    }, { queueNames: [queueName], concurrency: 1 });
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        processed,
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error("Priority jobs were not processed")),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    assertEquals(order, ["high_priority", "low_priority"]);
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: defaultJobOptions retries then fails a job",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const { Queue } = await import("bullmq");
+    const queueName = `test_bullmq_${testRunId}_retries`;
+    let attemptsSeen = 0;
+    const logs: Record<string, unknown>[] = [];
+    const originalLog = console.log;
+    console.log = (message: string) => {
+      try {
+        logs.push(JSON.parse(message));
+      } catch { /* ignore non-JSON */ }
+    };
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: "fixed", delay: 25 },
+      },
+    });
+
+    try {
+      await backend.listen((_payload) => {
+        attemptsSeen += 1;
+        return Promise.reject(new Error("retry me"));
+      }, { queueNames: [queueName] });
+      await backend.enqueue({
+        jobName: "retry_job",
+        queueName,
+        jobBody: null,
+      });
+
+      await waitFor(
+        async () =>
+          (await backend.getQueueStats!(queueName)).counts.failed === 1,
+        "Retried job did not reach the failed state",
+      );
+      const inspector = new Queue(queueName, {
+        connection: { host: "localhost", port: 6379 },
+      });
+      const [failedJob] = await inspector.getFailed(0, 0);
+      await inspector.close();
+
+      assertEquals(attemptsSeen, 3);
+      assertEquals(failedJob.attemptsMade, 3);
+      assert(
+        logs.some((entry) =>
+          entry.event === "worker_job_failed" && entry.attemptsMade === 3
+        ),
+      );
+    } finally {
+      await backend.close();
+      console.log = originalLog;
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "BullMQBackend: applies bounded retention defaults to jobs and schedulers",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const { Queue } = await import("bullmq");
+    const queueName = `test_bullmq_${testRunId}_retention`;
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+    await backend.enqueue({
+      jobName: "retention_job",
+      queueName,
+      jobBody: null,
+    });
+    await backend.registerRecurringJob!({
+      jobName: "retention_scheduler_job",
+      queueName,
+      every: "1h",
+    });
+
+    const inspector = new Queue(queueName, {
+      connection: { host: "localhost", port: 6379 },
+    });
+    const job = await inspector.getJob("1");
+    assertEquals(job?.opts.removeOnComplete, { count: 1000 });
+    assertEquals(job?.opts.removeOnFail, { count: 5000 });
+
+    const schedulers = await inspector.getJobSchedulers();
+    const scheduler = schedulers.find((entry) =>
+      entry.key === "hermes:retention_scheduler_job"
+    );
+    assertEquals(scheduler?.template?.opts?.removeOnComplete, { count: 1000 });
+    assertEquals(scheduler?.template?.opts?.removeOnFail, { count: 5000 });
+    await inspector.close();
+    await backend.close();
   },
 });
 

@@ -31,6 +31,7 @@ export class RecurringEveryJob extends Job {
   readonly jobName = "recurring_every_job";
   readonly queueName = "default";
   override readonly every = "5m";
+  override readonly priority = 4;
 
   // deno-lint-ignore require-await
   async perform(jobBody: unknown): Promise<unknown> {

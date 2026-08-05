@@ -9,6 +9,7 @@ export abstract class Job {
   readonly every?: string;
   readonly cron?: string;
   readonly timeout?: string | number;
+  readonly priority?: number;
 
   abstract perform(
     jobBody: unknown,
@@ -35,6 +36,9 @@ export abstract class Job {
       jobBody,
     };
 
-    await backend.enqueue(payload, { delay: opts.delay });
+    await backend.enqueue(payload, {
+      delay: opts.delay,
+      priority: opts.priority ?? this.priority,
+    });
   }
 }

@@ -8,6 +8,10 @@ import {
   TestJob,
 } from "./helpers/test_jobs.ts";
 
+class PrioritizedJob extends TestJob {
+  override readonly priority = 10;
+}
+
 Deno.test("Job", async (t) => {
   await t.step("subclass can define jobName and queueName", () => {
     const job = new TestJob();
@@ -54,6 +58,29 @@ Deno.test("Job", async (t) => {
     assertEquals(backend.enqueued[0].options?.delay, 5000);
   });
 
+  await t.step("performLater() passes the job priority through", async () => {
+    clearBackend();
+    const backend = new MockBackend();
+    setBackend(backend);
+
+    await new PrioritizedJob().performLater({ message: "priority" });
+
+    assertEquals(backend.enqueued[0].options?.priority, 10);
+  });
+
+  await t.step(
+    "performLater() lets the call override job priority",
+    async () => {
+      clearBackend();
+      const backend = new MockBackend();
+      setBackend(backend);
+
+      await new PrioritizedJob().performLater(undefined, { priority: 2 });
+
+      assertEquals(backend.enqueued[0].options?.priority, 2);
+    },
+  );
+
   await t.step("performLater() constructs correct JobPayload", async () => {
     clearBackend();
     const backend = new MockBackend();
@@ -97,18 +124,24 @@ Deno.test("Job", async (t) => {
     assertEquals(job.isRecurring(), true);
   });
 
-  await t.step("getScheduleMs() returns milliseconds for every-based jobs", () => {
-    const job = new RecurringEveryJob();
-    assertEquals(job.getScheduleMs(), 300_000); // 5m = 300,000ms
-  });
+  await t.step(
+    "getScheduleMs() returns milliseconds for every-based jobs",
+    () => {
+      const job = new RecurringEveryJob();
+      assertEquals(job.getScheduleMs(), 300_000); // 5m = 300,000ms
+    },
+  );
 
   await t.step("getScheduleMs() returns undefined for cron-based jobs", () => {
     const job = new RecurringCronJob();
     assertEquals(job.getScheduleMs(), undefined);
   });
 
-  await t.step("getScheduleMs() returns undefined for non-recurring jobs", () => {
-    const job = new TestJob();
-    assertEquals(job.getScheduleMs(), undefined);
-  });
+  await t.step(
+    "getScheduleMs() returns undefined for non-recurring jobs",
+    () => {
+      const job = new TestJob();
+      assertEquals(job.getScheduleMs(), undefined);
+    },
+  );
 });

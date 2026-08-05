@@ -23,6 +23,7 @@ export type { DenoKvBackendOptions } from "./lib/backends/deno_kv.ts";
 export type {
   BackendAdapter,
   EnqueueOptions,
+  QueueStats,
   RecurringJobConfig,
 } from "./lib/backend.ts";
 export type {
@@ -32,7 +33,11 @@ export type {
   PerformLaterOptions,
   WorkerConfig,
 } from "./lib/types.ts";
-export type { EveryInterval, RecurringSchedule, TimeUnit } from "./lib/schedule.ts";
+export type {
+  EveryInterval,
+  RecurringSchedule,
+  TimeUnit,
+} from "./lib/schedule.ts";
 export {
   intervalToMs,
   parseEveryInterval,

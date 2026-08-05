@@ -33,7 +33,7 @@ class TDenoKvBackend implements BackendAdapter {
 
   async listen(
     handler: (payload: JobPayload) => Promise<void>,
-    _options?: { queueNames?: string[] },
+    _options?: { queueNames?: string[]; concurrency?: number },
   ): Promise<void> {
     const kv = await this.getKv();
     kv.listenQueue(async (message: unknown) => {
@@ -80,6 +80,8 @@ class TDenoKvBackend implements BackendAdapter {
 }
 
 /** Create a Deno KV backend adapter for Hermes. */
-export const DenoKvBackend = (options?: DenoKvBackendOptions): BackendAdapter => {
+export const DenoKvBackend = (
+  options?: DenoKvBackendOptions,
+): BackendAdapter => {
   return new TDenoKvBackend(options);
 };

@@ -2,7 +2,7 @@ import { JobLoader } from "./job_loader.ts";
 import { ManifestLoader } from "./manifest_loader.ts";
 import { MAX_TIMEOUT_MS, resolveJobTimeouts, Worker } from "./worker.ts";
 import { setBackend } from "./backend_registry.ts";
-import type { BackendAdapter } from "./backend.ts";
+import type { BackendAdapter, QueueStats } from "./backend.ts";
 import type { HermesParams } from "./types.ts";
 import { Logger } from "./logger.ts";
 
@@ -10,10 +10,12 @@ import { Logger } from "./logger.ts";
 export interface HermesInstance {
   start(): Promise<void>;
   stop(): Promise<void>;
+  stats(): Promise<QueueStats[]>;
 }
 
 class THermes implements HermesInstance {
   private params: HermesParams;
+  private queueNames: string[] = [];
   private started = false;
   private startPromise?: Promise<void>;
   private stopPromise?: Promise<void>;
@@ -72,6 +74,7 @@ class THermes implements HermesInstance {
             queueName: instance.queueName,
             every: instance.every,
             cron: instance.cron,
+            priority: instance.priority,
           });
           Logger.recurringJobRegistered(
             instance.jobName,
@@ -87,9 +90,11 @@ class THermes implements HermesInstance {
       jobsMap,
       backend: this.params.backend,
       queueNames,
+      concurrency: this.params.worker?.concurrency,
       timeoutByJobName,
     });
 
+    this.queueNames = queueNames;
     this.started = true;
   }
 
@@ -99,6 +104,23 @@ class THermes implements HermesInstance {
       this.stopPromise = this.stopAfterStart();
     }
     return this.stopPromise;
+  }
+
+  async stats(): Promise<QueueStats[]> {
+    if (!this.started) {
+      throw new Error("Hermes stats are only available after start().");
+    }
+
+    const getQueueStats = this.params.backend.getQueueStats;
+    if (!getQueueStats) {
+      throw new Error("The configured backend does not support queue stats.");
+    }
+
+    const stats: QueueStats[] = [];
+    for (const queueName of this.queueNames) {
+      stats.push(await getQueueStats.call(this.params.backend, queueName));
+    }
+    return stats;
   }
 
   private async stopBackend(): Promise<void> {

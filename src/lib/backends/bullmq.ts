@@ -19,6 +19,7 @@ import { type Job as BullMQJob, Queue, Worker } from "bullmq";
 import type {
   BackendAdapter,
   EnqueueOptions,
+  QueueStats,
   RecurringJobConfig,
 } from "../backend.ts";
 import type { JobPayload } from "../types.ts";
@@ -35,24 +36,52 @@ export interface BullMQBackendOptions {
   };
   defaultQueueName?: string;
   concurrency?: number;
+  /**
+   * Defaults for ordinary and recurring jobs. Bounded completed/failed job
+   * retention is applied when these fields are not overridden.
+   */
+  defaultJobOptions?: {
+    attempts?: number;
+    backoff?: {
+      type: "exponential" | "fixed";
+      delay: number;
+    };
+    removeOnComplete?: boolean | number | { age?: number; count?: number };
+    removeOnFail?: boolean | number | { age?: number; count?: number };
+  };
 }
+
+type BullMQDefaultJobOptions = NonNullable<
+  BullMQBackendOptions["defaultJobOptions"]
+>;
+
+const DEFAULT_JOB_OPTIONS: BullMQDefaultJobOptions = {
+  removeOnComplete: { count: 1000 },
+  removeOnFail: { count: 5000 },
+};
 
 class TBullMQBackend implements BackendAdapter {
   private queues: Map<string, Queue> = new Map();
   private workers: Map<string, Worker> = new Map();
   private options: BullMQBackendOptions;
+  private jobOptions: BullMQDefaultJobOptions;
   private activeJobs = 0;
   private activeJobsFinishedResolvers: Array<() => void> = [];
   private closed = false;
 
   constructor(options: BullMQBackendOptions) {
     this.options = options;
+    this.jobOptions = {
+      ...DEFAULT_JOB_OPTIONS,
+      ...options.defaultJobOptions,
+    };
   }
 
   private getOrCreateQueue(queueName: string): Queue {
     if (!this.queues.has(queueName)) {
       const queue = new Queue(queueName, {
         connection: this.options.connection,
+        defaultJobOptions: this.jobOptions,
       });
       queue.on("error", (error: Error) => Logger.queueError(queueName, error));
       this.queues.set(queueName, queue);
@@ -66,12 +95,13 @@ class TBullMQBackend implements BackendAdapter {
     const queue = this.getOrCreateQueue(queueName);
     await queue.add(payload.jobName, payload, {
       delay: options?.delay,
+      priority: options?.priority,
     });
   }
 
   async listen(
     handler: (payload: JobPayload) => Promise<void>,
-    options?: { queueNames?: string[] },
+    options?: { queueNames?: string[]; concurrency?: number },
   ): Promise<void> {
     const queueNames = options?.queueNames ?? [
       this.options.defaultQueueName ?? "default",
@@ -102,7 +132,7 @@ class TBullMQBackend implements BackendAdapter {
         },
         {
           connection: this.options.connection,
-          concurrency: this.options.concurrency ?? 1,
+          concurrency: options?.concurrency ?? this.options.concurrency ?? 1,
         },
       );
       worker.on("error", (error: Error) => {
@@ -147,6 +177,10 @@ class TBullMQBackend implements BackendAdapter {
     await queue.upsertJobScheduler(schedulerId, repeatOpts, {
       name: config.jobName,
       data: payload,
+      opts: {
+        ...this.jobOptions,
+        priority: config.priority,
+      },
     });
   }
 
@@ -173,6 +207,46 @@ class TBullMQBackend implements BackendAdapter {
     return new Promise((resolve) => {
       this.activeJobsFinishedResolvers.push(resolve);
     });
+  }
+
+  async getQueueStats(queueName: string): Promise<QueueStats> {
+    if (this.closed) {
+      throw new Error("BullMQ backend is closed.");
+    }
+
+    const queue = this.getOrCreateQueue(queueName);
+    const [counts, activeJobs] = await Promise.all([
+      queue.getJobCounts(
+        "waiting",
+        "prioritized",
+        "active",
+        "delayed",
+        "failed",
+        "completed",
+      ),
+      queue.getActive(0, 50),
+    ]);
+    const processedOn = activeJobs
+      .map((job) => job.processedOn)
+      .filter((value): value is number => value !== undefined);
+    const oldestProcessedOn = processedOn.length > 0
+      ? Math.min(...processedOn)
+      : undefined;
+
+    return {
+      queueName,
+      counts: {
+        waiting: (counts.waiting ?? 0) + (counts.prioritized ?? 0),
+        active: counts.active ?? 0,
+        delayed: counts.delayed ?? 0,
+        failed: counts.failed ?? 0,
+        completed: counts.completed ?? 0,
+        prioritized: counts.prioritized ?? 0,
+      },
+      ...(oldestProcessedOn === undefined
+        ? {}
+        : { oldestActiveJobAgeMs: Date.now() - oldestProcessedOn }),
+    };
   }
 }
 

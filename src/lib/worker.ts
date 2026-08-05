@@ -65,10 +65,11 @@ export class Worker {
       jobsMap,
       backend,
       queueNames,
+      concurrency,
       timeoutByJobName,
     }: WorkerParams,
   ): Promise<void> {
-    Logger.workerStarted(jobsMap.size, { queueNames });
+    Logger.workerStarted(jobsMap.size, { queueNames, concurrency });
 
     await backend.listen(async (payload: JobPayload) => {
       const { jobName, jobBody, queueName } = payload;
@@ -119,6 +120,6 @@ export class Worker {
         Logger.jobFailed(jobName, queueName, errorMessage, Date.now() - start);
         throw error;
       }
-    }, { queueNames });
+    }, { queueNames, concurrency });
   }
 }

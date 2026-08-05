@@ -3,6 +3,7 @@ import type { BackendAdapter } from "./backend.ts";
 /** Options for scheduling a job to run later. */
 export type PerformLaterOptions = {
   delay?: number;
+  priority?: number;
 };
 
 /** Context supplied to a running job. */
@@ -37,5 +38,6 @@ export type WorkerParams = {
   jobsMap: Map<string, any>;
   backend: BackendAdapter;
   queueNames?: string[];
+  concurrency?: number;
   timeoutByJobName: ReadonlyMap<string, number | undefined>;
 };

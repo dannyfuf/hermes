@@ -179,6 +179,21 @@ Deno.test("Worker", async (t) => {
     assertEquals(backend.listenOptions?.queueNames, ["default", "priority"]);
   });
 
+  await t.step("passes concurrency to backend.listen()", async () => {
+    const backend = new MockBackend();
+    // deno-lint-ignore no-explicit-any
+    const jobsMap = new Map<string, any>();
+
+    await Worker.start({
+      jobsMap,
+      backend,
+      concurrency: 7,
+      timeoutByJobName: resolveJobTimeouts(jobsMap),
+    });
+
+    assertEquals(backend.listenOptions?.concurrency, 7);
+  });
+
   await t.step(
     "rejects timed-out jobs with JobTimeoutError and aborts the signal",
     async () => {
