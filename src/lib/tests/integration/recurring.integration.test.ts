@@ -128,6 +128,41 @@ integrationTest(
   },
 );
 
+integrationTest(
+  "recurring completed jobs do not exceed configured retention",
+  async () => {
+    await runIntegration("recurring_retention", async (scope) => {
+      const backend = scope.backend({
+        defaultJobOptions: { removeOnComplete: { count: 2 } },
+      });
+      let executions = 0;
+
+      await backend.listen(async () => {
+        executions += 1;
+        await Promise.resolve();
+      }, { queueNames: [scope.queueName] });
+      await backend.registerRecurringJob!({
+        jobName: "recurring_retention",
+        queueName: scope.queueName,
+        every: "1s",
+      });
+
+      await waitFor(
+        async () => {
+          const stats = await backend.getQueueStats!(scope.queueName);
+          return executions >= 5 && stats.counts.active === 0 &&
+            stats.counts.completed === 2;
+        },
+        "Recurring completed jobs were not trimmed to the retention limit",
+        8_000,
+      );
+
+      const stats = await backend.getQueueStats!(scope.queueName);
+      assertEquals(stats.counts.completed, 2);
+    });
+  },
+);
+
 integrationTest("recurring priority flows to scheduled instances", async () => {
   await runIntegration("recurring_priority", async (scope) => {
     const backend = scope.backend();

@@ -15,7 +15,12 @@
  * @module
  */
 
-import { type Job as BullMQJob, Queue, Worker } from "bullmq";
+import {
+  type DefaultJobOptions,
+  type Job as BullMQJob,
+  Queue,
+  Worker,
+} from "bullmq";
 import type {
   BackendAdapter,
   EnqueueOptions,
@@ -40,40 +45,48 @@ export interface BullMQBackendOptions {
    * Defaults for ordinary and recurring jobs. Bounded completed/failed job
    * retention is applied when these fields are not overridden.
    */
-  defaultJobOptions?: {
-    attempts?: number;
-    backoff?: {
-      type: "exponential" | "fixed";
-      delay: number;
-    };
-    removeOnComplete?: boolean | number | { age?: number; count?: number };
-    removeOnFail?: boolean | number | { age?: number; count?: number };
-  };
+  defaultJobOptions?: DefaultJobOptions;
 }
 
-type BullMQDefaultJobOptions = NonNullable<
-  BullMQBackendOptions["defaultJobOptions"]
->;
-
-const DEFAULT_JOB_OPTIONS: BullMQDefaultJobOptions = {
+const DEFAULT_JOB_OPTIONS: DefaultJobOptions = {
   removeOnComplete: { count: 1000 },
   removeOnFail: { count: 5000 },
 };
+
+function withoutUndefinedJobOptions(
+  options?: DefaultJobOptions,
+): DefaultJobOptions {
+  if (!options) return {};
+
+  return Object.fromEntries(
+    Object.entries(options).filter(([, value]) => value !== undefined),
+  );
+}
+
+function validateConcurrency(concurrency: number): void {
+  if (!Number.isFinite(concurrency) || concurrency < 1) {
+    throw new Error(
+      "Invalid BullMQ concurrency: it must be a finite number greater than or equal to 1.",
+    );
+  }
+}
 
 class TBullMQBackend implements BackendAdapter {
   private queues: Map<string, Queue> = new Map();
   private workers: Map<string, Worker> = new Map();
   private options: BullMQBackendOptions;
-  private jobOptions: BullMQDefaultJobOptions;
+  private jobOptions: DefaultJobOptions;
   private activeJobs = 0;
   private activeJobsFinishedResolvers: Array<() => void> = [];
   private closed = false;
+  private gracefulClosePromise?: Promise<void>;
+  private forceClosePromise?: Promise<void>;
 
   constructor(options: BullMQBackendOptions) {
     this.options = options;
     this.jobOptions = {
       ...DEFAULT_JOB_OPTIONS,
-      ...options.defaultJobOptions,
+      ...withoutUndefinedJobOptions(options.defaultJobOptions),
     };
   }
 
@@ -106,6 +119,8 @@ class TBullMQBackend implements BackendAdapter {
     const queueNames = options?.queueNames ?? [
       this.options.defaultQueueName ?? "default",
     ];
+    const concurrency = options?.concurrency ?? this.options.concurrency ?? 1;
+    validateConcurrency(concurrency);
 
     for (const queueName of queueNames) {
       const existingWorker = this.workers.get(queueName);
@@ -132,7 +147,7 @@ class TBullMQBackend implements BackendAdapter {
         },
         {
           connection: this.options.connection,
-          concurrency: options?.concurrency ?? this.options.concurrency ?? 1,
+          concurrency,
         },
       );
       worker.on("error", (error: Error) => {
@@ -179,26 +194,51 @@ class TBullMQBackend implements BackendAdapter {
       data: payload,
       opts: {
         ...this.jobOptions,
-        priority: config.priority,
+        ...(config.priority === undefined ? {} : { priority: config.priority }),
       },
     });
   }
 
-  async close(options?: { force?: boolean }): Promise<void> {
+  close(options?: { force?: boolean }): Promise<void> {
+    if (options?.force) {
+      this.forceClosePromise ??= this.closeBackend(true);
+      return this.forceClosePromise;
+    }
+
+    if (this.gracefulClosePromise) return this.gracefulClosePromise;
+    if (this.forceClosePromise) return this.forceClosePromise;
+    this.gracefulClosePromise ??= this.closeBackend(false);
+    return this.gracefulClosePromise;
+  }
+
+  private async closeBackend(force: boolean): Promise<void> {
     this.closed = true;
     const workers = Array.from(this.workers.values());
-    await Promise.all(workers.map((worker) => worker.pause(true)));
-    if (!options?.force) {
-      await this.waitForActiveJobs();
-    }
-    await Promise.all(
-      workers.map((worker) => worker.close(options?.force)),
-    );
-    this.workers.clear();
+    const queues = Array.from(this.queues.values());
 
-    await Promise.all(
-      Array.from(this.queues.values()).map((queue) => queue.close()),
-    );
+    if (force) {
+      const workersClosed = Promise.all(
+        workers.map((worker) => worker.close(true)),
+      );
+      const queuesClosed = Promise.all(
+        queues.map((queue) => queue.disconnect()),
+      );
+      this.resolveActiveJobsFinished();
+      await Promise.all([workersClosed, queuesClosed]);
+    } else {
+      await Promise.all(workers.map((worker) => worker.pause(true)));
+      await this.waitForActiveJobs();
+
+      if (this.forceClosePromise) {
+        await this.forceClosePromise;
+        return;
+      }
+
+      await Promise.all(workers.map((worker) => worker.close(false)));
+      await Promise.all(queues.map((queue) => queue.close()));
+    }
+
+    this.workers.clear();
     this.queues.clear();
   }
 
@@ -207,6 +247,12 @@ class TBullMQBackend implements BackendAdapter {
     return new Promise((resolve) => {
       this.activeJobsFinishedResolvers.push(resolve);
     });
+  }
+
+  private resolveActiveJobsFinished(): void {
+    for (const resolve of this.activeJobsFinishedResolvers.splice(0)) {
+      resolve();
+    }
   }
 
   async getQueueStats(queueName: string): Promise<QueueStats> {
@@ -227,6 +273,7 @@ class TBullMQBackend implements BackendAdapter {
       queue.getActive(0, 50),
     ]);
     const processedOn = activeJobs
+      .filter((job): job is BullMQJob => job !== undefined)
       .map((job) => job.processedOn)
       .filter((value): value is number => value !== undefined);
     const oldestProcessedOn = processedOn.length > 0

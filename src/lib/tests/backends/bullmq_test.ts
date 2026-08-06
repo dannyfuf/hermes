@@ -34,6 +34,23 @@ const redisAvailable = await checkRedis();
 const testRunId = crypto.randomUUID().slice(0, 8);
 
 Deno.test({
+  name: "BullMQBackend: rejects invalid concurrency before creating workers",
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+
+    await assertRejects(
+      () => backend.listen(() => Promise.resolve(), { concurrency: 0 }),
+      Error,
+      "Invalid BullMQ concurrency",
+    );
+    await backend.close({ force: true });
+  },
+});
+
+Deno.test({
   name: "BullMQBackend: enqueue and process a job",
   ignore: !redisAvailable,
   sanitizeOps: false,
@@ -400,7 +417,8 @@ Deno.test({
 });
 
 Deno.test({
-  name: "BullMQBackend: force close returns with a hung job in flight",
+  name:
+    "BullMQBackend: force close releases a graceful close waiting on a hung job",
   ignore: !redisAvailable,
   sanitizeOps: false,
   sanitizeResources: false,
@@ -429,10 +447,19 @@ Deno.test({
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        backend.close({ force: true }),
+        Promise.all([
+          backend.close({ force: true }),
+          backend.close({ force: true }),
+          gracefulClose,
+        ]),
         new Promise<never>((_, reject) => {
           timeoutId = setTimeout(
-            () => reject(new Error("Force close did not return promptly")),
+            () =>
+              reject(
+                new Error(
+                  "Force and graceful closes did not return promptly",
+                ),
+              ),
             1_000,
           );
         }),
@@ -440,7 +467,6 @@ Deno.test({
     } finally {
       clearTimeout(timeoutId);
     }
-    void gracefulClose;
   },
 });
 
@@ -668,6 +694,92 @@ Deno.test({
     );
     assertEquals(scheduler?.template?.opts?.removeOnComplete, { count: 1000 });
     assertEquals(scheduler?.template?.opts?.removeOnFail, { count: 5000 });
+    await inspector.close();
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: explicit undefined keeps bounded retention defaults",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const { Queue } = await import("bullmq");
+    const queueName = `test_bullmq_${testRunId}_undefined_retention`;
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+      defaultJobOptions: {
+        removeOnComplete: undefined,
+        removeOnFail: undefined,
+      },
+    });
+    await backend.enqueue({
+      jobName: "undefined_retention_job",
+      queueName,
+      jobBody: null,
+    });
+    await backend.registerRecurringJob!({
+      jobName: "undefined_retention_scheduler",
+      queueName,
+      every: "1h",
+    });
+
+    const inspector = new Queue(queueName, {
+      connection: { host: "localhost", port: 6379 },
+    });
+    const job = await inspector.getJob("1");
+    const scheduler = await inspector.getJobScheduler(
+      "hermes:undefined_retention_scheduler",
+    );
+    assertEquals(job?.opts.removeOnComplete, { count: 1000 });
+    assertEquals(job?.opts.removeOnFail, { count: 5000 });
+    assertEquals(scheduler?.template?.opts?.removeOnComplete, { count: 1000 });
+    assertEquals(scheduler?.template?.opts?.removeOnFail, { count: 5000 });
+    await inspector.close();
+    await backend.close();
+  },
+});
+
+Deno.test({
+  name: "BullMQBackend: false and zero override retention defaults",
+  ignore: !redisAvailable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const { Queue } = await import("bullmq");
+    const queueName = `test_bullmq_${testRunId}_explicit_retention`;
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+      defaultJobOptions: {
+        removeOnComplete: false,
+        removeOnFail: 0,
+      },
+    });
+    await backend.enqueue({
+      jobName: "explicit_retention_job",
+      queueName,
+      jobBody: null,
+    });
+    await backend.registerRecurringJob!({
+      jobName: "explicit_retention_scheduler",
+      queueName,
+      every: "1h",
+    });
+
+    const inspector = new Queue(queueName, {
+      connection: { host: "localhost", port: 6379 },
+    });
+    const job = await inspector.getJob("1");
+    const scheduler = await inspector.getJobScheduler(
+      "hermes:explicit_retention_scheduler",
+    );
+    assertEquals(job?.opts.removeOnComplete, false);
+    assertEquals(job?.opts.removeOnFail, 0);
+    assertEquals(scheduler?.template?.opts?.removeOnComplete, false);
+    assertEquals(scheduler?.template?.opts?.removeOnFail, 0);
     await inspector.close();
     await backend.close();
   },

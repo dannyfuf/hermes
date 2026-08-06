@@ -110,6 +110,58 @@ integrationTest(
   },
 );
 
+integrationTest(
+  "stats polling tolerates jobs removed during high-churn completion",
+  async () => {
+    await runIntegration("stats_churn", async (scope) => {
+      const backend = scope.backend({
+        defaultJobOptions: { removeOnComplete: true },
+      });
+      let handled = 0;
+      await backend.listen(() => {
+        handled += 1;
+        return Promise.resolve();
+      }, { queueNames: [scope.queueName], concurrency: 10 });
+
+      let polling = true;
+      let polls = 0;
+      const pollingErrors: unknown[] = [];
+      const pollStats = (async () => {
+        while (polling) {
+          try {
+            await backend.getQueueStats!(scope.queueName);
+            polls += 1;
+          } catch (error) {
+            pollingErrors.push(error);
+          }
+        }
+      })();
+
+      try {
+        await Promise.all(
+          Array.from({ length: 300 }, (_, index) =>
+            backend.enqueue({
+              jobName: `stats_churn_${index}`,
+              queueName: scope.queueName,
+              jobBody: null,
+            })),
+        );
+        await waitFor(
+          () => handled === 300,
+          "High-churn jobs did not all complete",
+          10_000,
+        );
+      } finally {
+        polling = false;
+        await pollStats;
+      }
+
+      assert(polls > 0);
+      assertEquals(pollingErrors, []);
+    });
+  },
+);
+
 integrationTest("stats reject before start and after stop", async () => {
   await runIntegration("stats_lifecycle", async (scope) => {
     const backend = scope.backend();
