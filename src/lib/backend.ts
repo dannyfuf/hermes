@@ -63,3 +63,8 @@ export interface BackendAdapter {
   /** Read queue health statistics. Optional — not all backends support it. */
   getQueueStats?(queueName: string): Promise<QueueStats>;
 }
+
+/** Internal capability for validating a complete recurring-job manifest. */
+export interface RecurringJobValidationBackend extends BackendAdapter {
+  validateRecurringJobs(configs: readonly RecurringJobConfig[]): Promise<void>;
+}

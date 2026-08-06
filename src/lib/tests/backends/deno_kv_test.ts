@@ -1,6 +1,29 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import type { BackendAdapter, EnqueueOptions } from "../../backend.ts";
+import type {
+  BackendAdapter,
+  EnqueueOptions,
+  RecurringJobConfig,
+  RecurringJobValidationBackend,
+} from "../../backend.ts";
 import type { JobPayload } from "../../types.ts";
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 /** Create an isolated DenoKvBackend using a temp directory */
 async function createIsolatedBackend(): Promise<
@@ -75,6 +98,81 @@ Deno.test({
       // Calling close() again should also not throw (idempotent)
       await backend.close();
     } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: graceful close waits for an in-flight handler",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+    let resolveStarted: () => void = () => {};
+    let releaseHandler: () => void = () => {};
+    const started = new Promise<void>((resolve) => resolveStarted = resolve);
+    const release = new Promise<void>((resolve) => releaseHandler = resolve);
+
+    try {
+      await backend.listen(async () => {
+        resolveStarted();
+        await release;
+      });
+      await backend.enqueue({
+        jobName: "graceful_close_job",
+        queueName: "default",
+        jobBody: null,
+      });
+      await withTimeout(started, 2_000, "KV handler did not start");
+
+      let closeSettled = false;
+      const closePromise = backend.close().then(() => {
+        closeSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assertEquals(closeSettled, false);
+
+      releaseHandler();
+      await withTimeout(
+        closePromise,
+        2_000,
+        "Graceful KV close did not finish after handler release",
+      );
+      assertEquals(closeSettled, true);
+    } finally {
+      releaseHandler();
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: force close does not wait for an in-flight handler",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+    let resolveStarted: () => void = () => {};
+    let releaseHandler: () => void = () => {};
+    const started = new Promise<void>((resolve) => resolveStarted = resolve);
+    const release = new Promise<void>((resolve) => releaseHandler = resolve);
+
+    try {
+      await backend.listen(async () => {
+        resolveStarted();
+        await release;
+      });
+      await backend.enqueue({
+        jobName: "force_close_job",
+        queueName: "default",
+        jobBody: null,
+      });
+      await withTimeout(started, 2_000, "KV handler did not start");
+
+      await withTimeout(
+        backend.close({ force: true }),
+        250,
+        "Force KV close waited for the active handler",
+      );
+    } finally {
+      releaseHandler();
       await cleanup();
     }
   },
@@ -156,6 +254,86 @@ Deno.test({
         queueName: "default",
         every: "1m",
       });
+    } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: colliding sanitized prefixes get distinct cron names",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+    const suffix = crypto.randomUUID().slice(0, 8);
+    const configs: RecurringJobConfig[] = [
+      {
+        jobName: `namespace-${suffix}:a:b`,
+        queueName: "default",
+        every: "1m",
+      },
+      {
+        jobName: `namespace-${suffix}:a/b`,
+        queueName: "default",
+        every: "1m",
+      },
+    ];
+    const validationBackend = backend as RecurringJobValidationBackend;
+
+    try {
+      await validationBackend.validateRecurringJobs(configs);
+      await backend.registerRecurringJob!(configs[0]);
+      await backend.registerRecurringJob!(configs[1]);
+    } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: caps cron names derived from long raw job names",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+    const config: RecurringJobConfig = {
+      jobName: `long-${crypto.randomUUID()}-${"x".repeat(100)}`,
+      queueName: "default",
+      every: "1m",
+    };
+    const validationBackend = backend as RecurringJobValidationBackend;
+
+    try {
+      await validationBackend.validateRecurringJobs([config]);
+      await backend.registerRecurringJob!(config);
+    } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: rejects duplicate derived cron names in pre-validation",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+    const commonPrefix = "x".repeat(60);
+    const configs: RecurringJobConfig[] = [
+      {
+        jobName: `${commonPrefix}23348`,
+        queueName: "default",
+        every: "1m",
+      },
+      {
+        jobName: `${commonPrefix}251842`,
+        queueName: "default",
+        every: "1m",
+      },
+    ];
+    const validationBackend = backend as RecurringJobValidationBackend;
+
+    try {
+      await assertRejects(
+        () => validationBackend.validateRecurringJobs(configs),
+        Error,
+        "Duplicate derived Deno cron name",
+      );
     } finally {
       await cleanup();
     }

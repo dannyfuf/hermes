@@ -2,18 +2,42 @@ import type {
   BackendAdapter,
   EnqueueOptions,
   RecurringJobConfig,
+  RecurringJobValidationBackend,
 } from "../backend.ts";
 import type { JobPayload } from "../types.ts";
 import { intervalToCronSchedule, parseEveryInterval } from "../schedule.ts";
+import { Logger } from "../logger.ts";
+
+const MAX_CRON_NAME_LENGTH = 64;
+const CRON_NAME_PREFIX = "hermes-";
+const HASH_LENGTH = 8;
+const MAX_READABLE_PREFIX_LENGTH = MAX_CRON_NAME_LENGTH -
+  CRON_NAME_PREFIX.length - HASH_LENGTH - 1;
+
+function fnv1a32(value: string): string {
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(HASH_LENGTH, "0");
+}
+
+function cronNameFor(jobName: string): string {
+  const readablePrefix = jobName.replace(/[^A-Za-z0-9_-]/g, "-")
+    .slice(0, MAX_READABLE_PREFIX_LENGTH);
+  return `${CRON_NAME_PREFIX}${readablePrefix}-${fnv1a32(jobName)}`;
+}
 
 /** Options for the Deno KV backend adapter. */
 export interface DenoKvBackendOptions {
   path?: string;
 }
 
-class TDenoKvBackend implements BackendAdapter {
+class TDenoKvBackend implements RecurringJobValidationBackend {
   private kv: Deno.Kv | null = null;
   private path?: string;
+  private readonly inFlightHandlers = new Set<Promise<void>>();
 
   constructor(options?: DenoKvBackendOptions) {
     this.path = options?.path;
@@ -36,9 +60,40 @@ class TDenoKvBackend implements BackendAdapter {
     _options?: { queueNames?: string[]; concurrency?: number },
   ): Promise<void> {
     const kv = await this.getKv();
-    kv.listenQueue(async (message: unknown) => {
-      await handler(message as JobPayload);
+    kv.listenQueue((message: unknown) => {
+      const handlerPromise = Promise.resolve().then(() =>
+        handler(message as JobPayload)
+      );
+      this.inFlightHandlers.add(handlerPromise);
+      handlerPromise.then(
+        () => this.inFlightHandlers.delete(handlerPromise),
+        () => this.inFlightHandlers.delete(handlerPromise),
+      );
+      return handlerPromise;
     });
+  }
+
+  // deno-lint-ignore require-await
+  async validateRecurringJobs(
+    configs: readonly RecurringJobConfig[],
+  ): Promise<void> {
+    const jobNameByCronName = new Map<string, string>();
+    for (const config of configs) {
+      const cronName = cronNameFor(config.jobName);
+      if (cronName.length > MAX_CRON_NAME_LENGTH) {
+        throw new Error(
+          `Derived Deno cron name for job "${config.jobName}" exceeds ${MAX_CRON_NAME_LENGTH} characters.`,
+        );
+      }
+
+      const existingJobName = jobNameByCronName.get(cronName);
+      if (existingJobName !== undefined) {
+        throw new Error(
+          `Duplicate derived Deno cron name "${cronName}" for jobs "${existingJobName}" and "${config.jobName}".`,
+        );
+      }
+      jobNameByCronName.set(cronName, config.jobName);
+    }
   }
 
   // deno-lint-ignore require-await
@@ -59,23 +114,30 @@ class TDenoKvBackend implements BackendAdapter {
       throw new Error("Recurring job must have either 'every' or 'cron'");
     }
 
-    const cronName = `hermes-${
-      config.jobName.replace(
-        /[^A-Za-z0-9_-]/g,
-        "-",
-      )
-    }`;
-    Deno.cron(cronName, schedule, async () => {
+    const cronName = cronNameFor(config.jobName);
+    const cronPromise = Deno.cron(cronName, schedule, async () => {
       await this.enqueue(payload);
+    });
+    cronPromise.catch((error: unknown) => {
+      Logger.error(
+        "Deno cron registration failed",
+        error instanceof Error ? error.message : String(error),
+        { jobName: config.jobName, cronName },
+      );
     });
   }
 
-  close(_options?: { force?: boolean }): Promise<void> {
+  async close(options?: { force?: boolean }): Promise<void> {
+    if (!options?.force) {
+      while (this.inFlightHandlers.size > 0) {
+        await Promise.allSettled([...this.inFlightHandlers]);
+      }
+    }
+
     if (this.kv) {
       this.kv.close();
       this.kv = null;
     }
-    return Promise.resolve();
   }
 }
 
