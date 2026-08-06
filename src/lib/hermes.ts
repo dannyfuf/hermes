@@ -78,7 +78,7 @@ class THermes implements HermesInstance {
       this.params.worker?.defaultJobTimeout,
     );
 
-    // Extract unique queue names from registered jobs for BullMQ routing
+    // Extract unique queue names from registered jobs for backend routing
     const queueNames = [
       ...new Set(
         // deno-lint-ignore no-explicit-any

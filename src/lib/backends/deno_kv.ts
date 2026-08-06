@@ -57,13 +57,30 @@ class TDenoKvBackend implements RecurringJobValidationBackend {
 
   async listen(
     handler: (payload: JobPayload) => Promise<void>,
-    _options?: { queueNames?: string[]; concurrency?: number },
+    options?: { queueNames?: string[]; concurrency?: number },
   ): Promise<void> {
     const kv = await this.getKv();
+    const configuredQueueNames = options?.queueNames;
+    const queueNames = configuredQueueNames && configuredQueueNames.length > 0
+      ? new Set(configuredQueueNames)
+      : undefined;
+
     kv.listenQueue((message: unknown) => {
-      const handlerPromise = Promise.resolve().then(() =>
-        handler(message as JobPayload)
-      );
+      const payload = message as JobPayload;
+      const handlerPromise = Promise.resolve().then(() => {
+        if (queueNames && !queueNames.has(payload.queueName)) {
+          Logger.jobSkipped(
+            payload.jobName,
+            payload.queueName,
+            "queue filtering",
+          );
+          throw new Error(
+            `Queue "${payload.queueName}" is not handled by this worker`,
+          );
+        }
+
+        return handler(payload);
+      });
       this.inFlightHandlers.add(handlerPromise);
       handlerPromise.then(
         () => this.inFlightHandlers.delete(handlerPromise),

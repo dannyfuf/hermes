@@ -3,7 +3,6 @@ import type { JobPayload } from "./types.ts";
 /** Options passed when enqueueing a job. */
 export interface EnqueueOptions {
   delay?: number;
-  queueName?: string;
   priority?: number;
 }
 
@@ -41,6 +40,10 @@ export interface BackendAdapter {
   /**
    * Start listening for jobs and dispatch them to the handler.
    * The handler receives the raw JobPayload.
+   * queueNames restricts delivery to the named queues. Undefined or empty
+   * lists are backend-specific: Deno KV accepts every queue in both cases;
+   * BullMQ falls back to its default queue when undefined and creates no
+   * listeners when the list is empty.
    */
   listen(
     handler: (payload: JobPayload) => Promise<void>,

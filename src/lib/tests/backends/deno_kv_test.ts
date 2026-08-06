@@ -25,9 +25,24 @@ async function withTimeout<T>(
   }
 }
 
+async function waitForKvValue<T>(
+  kv: Deno.Kv,
+  key: Deno.KvKey,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const entry = await kv.get<T>(key);
+    if (entry.value !== null) return entry.value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(message);
+}
+
 /** Create an isolated DenoKvBackend using a temp directory */
 async function createIsolatedBackend(): Promise<
-  { backend: BackendAdapter; cleanup: () => Promise<void> }
+  { backend: BackendAdapter; kvPath: string; cleanup: () => Promise<void> }
 > {
   const tempDir = await Deno.makeTempDir();
   const kvPath = `${tempDir}/test.kv`;
@@ -42,7 +57,7 @@ async function createIsolatedBackend(): Promise<
     } catch { /* best effort */ }
   };
 
-  return { backend, cleanup };
+  return { backend, kvPath, cleanup };
 }
 
 Deno.test({
@@ -215,18 +230,17 @@ Deno.test({
 });
 
 Deno.test({
-  name: "DenoKvBackend: listen ignores queueNames option (single global queue)",
+  name: "DenoKvBackend: listen dispatches jobs from configured queues",
   async fn() {
     const { backend, cleanup } = await createIsolatedBackend();
 
     try {
       const receivedPayloads: JobPayload[] = [];
 
-      // Passing queueNames should not throw or change behavior
       await backend.listen(async (payload: JobPayload) => {
         receivedPayloads.push(payload);
         await Promise.resolve();
-      }, { queueNames: ["custom", "other"] });
+      }, { queueNames: ["custom"] });
 
       await backend.enqueue({
         jobName: "any_job",
@@ -236,7 +250,105 @@ Deno.test({
 
       await new Promise((resolve) => setTimeout(resolve, 1000));
       assertEquals(receivedPayloads.length, 1);
+      assertEquals(receivedPayloads[0].queueName, "custom");
     } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: listen with empty queueNames accepts every queue",
+  async fn() {
+    const { backend, cleanup } = await createIsolatedBackend();
+
+    try {
+      const receivedPayloads: JobPayload[] = [];
+
+      await backend.listen(async (payload: JobPayload) => {
+        receivedPayloads.push(payload);
+        await Promise.resolve();
+      }, { queueNames: [] });
+
+      await backend.enqueue({
+        jobName: "unfiltered_job",
+        queueName: "any_queue",
+        jobBody: null,
+      });
+
+      await withTimeout(
+        (async () => {
+          while (receivedPayloads.length === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        })(),
+        2_000,
+        "KV handler did not receive an unfiltered job",
+      );
+      assertEquals(receivedPayloads.length, 1);
+      assertEquals(receivedPayloads[0].queueName, "any_queue");
+    } finally {
+      await cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "DenoKvBackend: filtered jobs are logged, retried, and become undelivered",
+  async fn() {
+    const { backend, kvPath, cleanup } = await createIsolatedBackend();
+    const producerKv = await Deno.openKv(kvPath);
+    const undeliveredKey: Deno.KvKey = [
+      "undelivered",
+      crypto.randomUUID(),
+    ];
+    const payload: JobPayload = {
+      jobName: "filtered_job",
+      queueName: "unowned_queue",
+      jobBody: null,
+    };
+    const logLines: string[] = [];
+    const originalConsoleLog = console.log;
+    let handlerCalls = 0;
+
+    try {
+      console.log = (...data: unknown[]) => {
+        logLines.push(data.map(String).join(" "));
+      };
+      await backend.listen(async () => {
+        handlerCalls += 1;
+        await Promise.resolve();
+      }, { queueNames: ["owned_queue"] });
+
+      await producerKv.enqueue(payload, {
+        backoffSchedule: [10],
+        keysIfUndelivered: [undeliveredKey],
+      });
+
+      const undeliveredPayload = await waitForKvValue<JobPayload>(
+        producerKv,
+        undeliveredKey,
+        2_000,
+        "Filtered job did not reach Deno KV undelivered handling",
+      );
+      assertEquals(undeliveredPayload, payload);
+      assertEquals(handlerCalls, 0);
+
+      const skippedEvents = logLines.flatMap((line) => {
+        try {
+          return [JSON.parse(line) as Record<string, unknown>];
+        } catch {
+          return [];
+        }
+      }).filter((event) => event.event === "job_skipped");
+      assertEquals(skippedEvents.length >= 1, true);
+      assertEquals(skippedEvents[0].jobName, payload.jobName);
+      assertEquals(skippedEvents[0].queueName, payload.queueName);
+      assertEquals(skippedEvents[0].reason, "queue filtering");
+    } finally {
+      console.log = originalConsoleLog;
+      producerKv.close();
       await cleanup();
     }
   },

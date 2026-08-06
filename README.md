@@ -16,8 +16,8 @@ like **Deno KV** or **Redis (BullMQ)**.
   abort supported I/O
 - **Priorities and retries**: BullMQ-native ordering, attempts, and backoff
 - **Queue health stats**: Inspect counts and detect unusually old active jobs
-- **Queue routing**: Route jobs by name; BullMQ processes queues independently
-  while Deno KV uses one global queue
+- **Queue routing**: Route jobs by name; BullMQ processes queues independently,
+  while Deno KV filters its global queue at delivery time
 - **Structured logging**: JSON-formatted lifecycle events for every job
 - **Graceful shutdown**: Clean worker shutdown with configurable timeouts
 - **Deno Deploy compatible**: Works out of the box on Deno Deploy with the Deno
@@ -450,7 +450,12 @@ export class ReportJob extends Job {
 Hermes automatically extracts all unique queue names from the manifest and
 listens on each one. With the BullMQ backend, each queue gets its own dedicated
 BullMQ Worker for true multi-queue processing. Deno KV has one global queue and
-cannot filter by `queueName`.
+filters after delivery: a mismatched payload logs `job_skipped` and rejects the
+delivery so Deno KV's native retry/backoff can offer it to another listener.
+Redelivery to a listener that owns the queue is best-effort. If no listener
+accepts it, Deno KV exhausts its retry schedule and applies its undelivered
+handling; persistence requires `keysIfUndelivered`, which Hermes does not
+currently expose through `EnqueueOptions`.
 
 ## API Reference
 
@@ -608,7 +613,7 @@ Hermes emits structured JSON logs for all job lifecycle events:
 | `job_failed`               | Job threw an error (includes error message and duration)               |
 | `worker_job_failed`        | BullMQ marked a job attempt failed (includes job ID and attempts made) |
 | `job_stalled`              | BullMQ detected a stalled job                                          |
-| `job_skipped`              | Job was skipped (e.g., queue filtering)                                |
+| `job_skipped`              | Deno KV rejected a delivery because its queue was not configured       |
 | `unknown_job`              | Received a job with an unregistered `jobName`                          |
 | `recurring_job_registered` | A recurring job schedule was registered at startup                     |
 | `recurring_job_skipped`    | A recurring job schedule registration was skipped                      |
@@ -629,6 +634,10 @@ Hermes emits structured JSON logs for all job lifecycle events:
   wrong.
 - **Unknown job**: If a queued message references an unregistered `jobName`, the
   worker logs an `unknown_job` event and skips it.
+- **Deno KV queue mismatch**: The backend logs `job_skipped` with reason
+  `queue filtering` and rejects the delivery. Deno KV retries it using its
+  native backoff and may redeliver it to another listener; an unowned queue
+  eventually reaches Deno KV's undelivered handling.
 - **Job execution failure**: If `perform()` throws, the error is logged with the
   `job_failed` event (including duration) and re-thrown to the backend, which
   can handle retries if supported.

@@ -321,8 +321,13 @@ deliberately, keeping JSR slow-type constraints in mind.
 - Queue routing comes from each job class's `queueName`, on both sides: a
   producer whose class declares a different `queueName` than the consumer's
   class will enqueue to a queue nobody listens to.
-- Deno KV is a single global queue — it cannot filter by queue name; per-queue
-  workers and concurrency settings are BullMQ capabilities.
+- Deno KV is a single global queue and filters by `queueName` after delivery. A
+  mismatch is logged and rejected so native bounded retries can offer it to
+  another listener, but reaching a listener that owns the queue is best-effort.
+  If no listener accepts it, the job reaches Deno KV's undelivered handling;
+  persistence there requires enqueueing with `keysIfUndelivered`, which Hermes
+  does not currently expose. BullMQ alone provides truly independent per-queue
+  workers and configurable concurrency.
 - Unknown-job payloads are acknowledged and dropped (after a log); failing known
   jobs are rethrown to the backend. Those are different reliability outcomes —
   keep the distinction.

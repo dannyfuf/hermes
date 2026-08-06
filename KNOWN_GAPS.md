@@ -12,8 +12,7 @@
 
 Wire these up or descope them — don't build parallel mechanisms next to them.
 
-- `JobPayload.metadata` and `EnqueueOptions.queueName` exist but are never
-  populated or read (routing always comes from `payload.queueName`).
+- `JobPayload.metadata` exists but is never populated or read.
 - `removeRecurringJob?()` is in the `BackendAdapter` contract and implemented by
   the test mock, but no concrete backend implements it and Hermes never calls it
   — recurring-schedule cleanup is an open problem (renamed jobs orphan their
@@ -25,9 +24,8 @@ Wire these up or descope them — don't build parallel mechanisms next to them.
   semantics.
 - Recurring jobs registered from class declarations always get
   `jobBody: undefined` — there is no way to attach a body to a schedule.
-- Several `Logger` events (`job_skipped`, `recurring_job_skipped`,
-  `info`/`warn`) and the corresponding README log-table entries have no emission
-  path.
+- Several `Logger` events (`recurring_job_skipped`, `info`/`warn`) and the
+  corresponding README log-table entries have no emission path.
 
 ## Tooling issues
 
@@ -72,3 +70,8 @@ Wire these up or descope them — don't build parallel mechanisms next to them.
   (about 24.8 days), matching the reliable JavaScript timer ceiling.
 - BullMQ queue stats treat prioritized jobs as part of the `waiting` backlog and
   expose their raw count as optional `counts.prioritized`.
+- Deno KV queue filtering rejects mismatched deliveries from its global queue.
+  Native retry may redeliver the job to a matching listener, but routing is
+  best-effort. If no listener accepts it, Deno KV only persists the exhausted
+  message when it was enqueued with `keysIfUndelivered`; Hermes does not expose
+  that native enqueue option yet.
