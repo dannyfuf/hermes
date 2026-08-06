@@ -82,14 +82,15 @@ export function intervalToCronSchedule(
     unit = "d";
   }
 
-  const withinDenoCronRange = (unit === "m" && value <= 59) ||
-    (unit === "h" && value <= 23) ||
-    (unit === "d" && value <= 31);
-  if (!withinDenoCronRange) {
+  const preservesElapsedCadence =
+    (unit === "m" && value <= 59 && 60 % value === 0) ||
+    (unit === "h" && value <= 23 && 24 % value === 0) ||
+    (unit === "d" && value === 1);
+  if (!preservesElapsedCadence) {
     throw new Error(
-      `Deno KV recurrence supports 1-59 minute, 1-23 hour, and 1-31 day intervals, ` +
-        `with exact unit conversions; cannot represent "${interval.value}${interval.unit}". ` +
-        `Use the BullMQ backend for arbitrary intervals.`,
+      `Deno KV recurrence supports minute intervals that divide 60, hour intervals that divide 24, and exactly 1 day, ` +
+        `with exact unit conversions; cannot represent "${interval.value}${interval.unit}" with true elapsed cadence. ` +
+        `Use the BullMQ backend for arbitrary elapsed intervals.`,
     );
   }
 

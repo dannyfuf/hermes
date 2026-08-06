@@ -132,8 +132,8 @@ Deno.test("intervalToCronSchedule", async (t) => {
     assertEquals(intervalToCronSchedule({ value: 120, unit: "m" }), {
       hour: { every: 2 },
     });
-    assertEquals(intervalToCronSchedule({ value: 48, unit: "h" }), {
-      dayOfMonth: { every: 2 },
+    assertEquals(intervalToCronSchedule({ value: 24, unit: "h" }), {
+      dayOfMonth: { every: 1 },
     });
   });
 
@@ -156,7 +156,27 @@ Deno.test("intervalToCronSchedule", async (t) => {
     assertThrows(
       () => intervalToCronSchedule({ value: 32, unit: "d" }),
       Error,
-      "Use the BullMQ backend for arbitrary intervals",
+      "Use the BullMQ backend for arbitrary elapsed intervals",
+    );
+    assertThrows(
+      () => intervalToCronSchedule({ value: 7, unit: "m" }),
+      Error,
+      "true elapsed cadence",
+    );
+    assertThrows(
+      () => intervalToCronSchedule({ value: 5, unit: "h" }),
+      Error,
+      "true elapsed cadence",
+    );
+    assertThrows(
+      () => intervalToCronSchedule({ value: 48, unit: "h" }),
+      Error,
+      "true elapsed cadence",
+    );
+    assertThrows(
+      () => intervalToCronSchedule({ value: 2, unit: "d" }),
+      Error,
+      "true elapsed cadence",
     );
   });
 });
