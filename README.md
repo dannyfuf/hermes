@@ -161,6 +161,11 @@ Deno Deploy):
 deno run --unstable-kv --unstable-cron worker.ts
 ```
 
+Deno cron registration names use a readable form of `jobName` plus a stable hash
+of the raw name. The total is capped at 64 characters for compatibility with the
+local Deno runtime, so punctuation collisions and long names are safe. Hermes
+validates the complete set before registering any cron.
+
 ### Redis / BullMQ
 
 Production-grade backend powered by [BullMQ](https://docs.bullmq.io/). It
@@ -190,7 +195,10 @@ const backend = BullMQBackend({
 BullMQ retains the most recent 1,000 completed and 5,000 failed jobs by default.
 This is a behavior change in 0.3.0 that prevents unbounded Redis growth.
 Override either value with `defaultJobOptions`; those options apply to ordinary
-and recurring jobs.
+and recurring jobs, and the option accepts BullMQ's full `DefaultJobOptions`
+type. Properties explicitly set to `undefined` are ignored so they cannot erase
+the bounded defaults; explicit values such as `false` and `0` remain valid
+overrides.
 
 ```bash
 deno run worker.ts
@@ -263,19 +271,20 @@ export class DailyReportJob extends Job {
 
 ### Backend Differences
 
-| Feature            | Deno KV                                                                                         | BullMQ (Redis)                                   |
-| ------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `every` support    | Cron-expressible intervals: 1–59m, 1–23h, 1–31d; exact multiples convert upward (`120s` → `2m`) | Any safe positive `s`, `m`, `h`, or `d` interval |
-| `cron` support     | Yes                                                                                             | Yes                                              |
-| Deduplication      | Automatic via `Deno.cron`                                                                       | Automatic via `upsertJobScheduler`               |
-| Overlap prevention | Built-in                                                                                        | Built-in                                         |
-| Priorities         | Ignored                                                                                         | Lower number runs first (`1`–`2^21`)             |
-| Worker concurrency | Single global KV listener; setting ignored                                                      | Configurable per queue worker                    |
-| Local runtime flag | Recurrence requires `--unstable-cron` in addition to `--unstable-kv`                            | None                                             |
+| Feature            | Deno KV                                                                                                      | BullMQ (Redis)                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `every` support    | Minute divisors of 60, hour divisors of 24, and exactly `1d`; exact multiples convert upward (`120s` → `2m`) | Any safe positive `s`, `m`, `h`, or `d` interval |
+| `cron` support     | Yes                                                                                                          | Yes                                              |
+| Deduplication      | Hashed, 64-character-capped names via `Deno.cron`                                                            | Automatic via `upsertJobScheduler`               |
+| Overlap prevention | Built-in                                                                                                     | Built-in                                         |
+| Priorities         | Ignored                                                                                                      | Lower number runs first (`1`–`2^21`)             |
+| Worker concurrency | Single global KV listener; setting ignored                                                                   | Configurable per queue worker                    |
+| Local runtime flag | Recurrence requires `--unstable-cron` in addition to `--unstable-kv`                                         | None                                             |
 
-Intervals such as `90s`, `90m`, and `25h` cannot be represented by `Deno.cron`
-and fail during recurring-job registration with guidance to use BullMQ. BullMQ
-uses millisecond intervals and accepts these values directly.
+Intervals such as `7m`, `5h`, `2d`, `90s`, `90m`, and `25h` cannot preserve a
+true elapsed cadence through resetting cron fields and fail during registration
+with guidance to use BullMQ. BullMQ uses millisecond intervals and accepts these
+values directly.
 
 ## Delayed Jobs
 
@@ -353,8 +362,10 @@ The error class is intentionally internal, so detect it by name.
 The timeout always releases the Hermes/BullMQ worker slot. It cannot forcibly
 stop JavaScript already running inside `perform()`: pass `context.signal` to
 APIs such as `fetch` or database clients that support `AbortSignal` so the
-underlying I/O is actually cancelled. Existing jobs that implement only
-`perform(jobBody)` remain valid.
+underlying I/O is actually cancelled. With retries enabled, a timed-out body
+that ignores the signal can overlap its retry, so timeout-enabled jobs must be
+abort-safe and idempotent. Existing jobs that implement only `perform(jobBody)`
+remain valid.
 
 ## Monitoring Queue Health
 
@@ -383,9 +394,19 @@ a clear error.
 `worker.gracefulShutdownTimeout` milliseconds to finish (default: `30_000`). If
 that deadline expires, Hermes logs `worker_force_closed` and asks the backend to
 force-close. For BullMQ this returns without waiting for in-flight handlers, so
-their locks can expire and another worker can recover the jobs. `stop()` is
-idempotent. The configured shutdown timeout must be a positive safe integer no
-greater than `2_147_483_647` milliseconds (about 24.8 days).
+their locks can expire and another worker can recover the jobs. The graceful
+deadline starts when `stop()` is requested, including while `start()` is still
+settling. Hermes waits at most another fixed 5 seconds for the force-close
+attempt, so a stuck backend connection cannot make `stop()` unbounded. `stop()`
+is idempotent. The configured shutdown timeout must be a positive safe integer
+no greater than `2_147_483_647` milliseconds (about 24.8 days).
+
+On graceful close, Deno KV drains tracked queue handlers before closing its KV
+handle. BullMQ pauses workers, drains active handlers, and closes Redis
+connections. Hermes also waits for timed-out `perform()` bodies that are still
+running. On force close, Deno KV closes its handle immediately and BullMQ
+disconnects without waiting for handlers; neither path waits for orphaned job
+bodies beyond the graceful deadline.
 
 Install both termination handlers in worker processes:
 
@@ -452,6 +473,17 @@ const hermes = Hermes({
 await hermes.start(); // Load manifest, register jobs, start worker
 await hermes.stop(); // Gracefully shut down
 ```
+
+Calling `start()` consumes the instance's single startup attempt. If startup
+fails, later `start()` calls report the original failure and require creating a
+new Hermes instance; retrying the same instance is unsafe because startup may
+already have registered durable schedules.
+
+Calling `stop()` before the first `start()` makes that later `start()` reject
+and requires a new instance. If `stop()` is requested while `start()` is already
+in progress, startup cancellation is cooperative: `start()` may resolve without
+a live worker after the current startup step settles, while `stop()` remains
+bounded by the shutdown deadline.
 
 ### `configure({ backend })`
 

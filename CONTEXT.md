@@ -253,14 +253,16 @@ deliberately, keeping JSR slow-type constraints in mind.
   several times (name loading, queue derivation, recurrence detection). There is
   no constructor injection; each queued payload also gets a **fresh instance**.
 - `jobName` must be unique per manifest. BullMQ uses `hermes:${jobName}` as its
-  recurring-scheduler identity; Deno KV uses a cron-safe `hermes-...` form.
-  Renaming a job orphans its old schedule.
+  recurring-scheduler identity; Deno KV uses a readable, stable-hash-suffixed
+  cron name capped at 64 characters and validates all derived names before any
+  registration. Renaming a job orphans its old schedule.
 - `every` strings accept any positive integer with units `s|m|h|d`, as long as
   conversion to milliseconds is a safe integer. BullMQ supports all such
-  intervals. Deno KV only supports intervals expressible by `Deno.cron` (1–59m,
-  1–23h, 1–31d), converting exact multiples upward (`120s` → `2m`) and rejecting
-  values such as `90s`, `90m`, and `25h`. A job may declare `every` **or**
-  `cron`, never both.
+  intervals. Deno KV only supports cron intervals that preserve true elapsed
+  cadence: minute values dividing 60, hour values dividing 24, and exactly one
+  day. It converts exact multiples upward (`120s` → `2m`) and rejects values
+  such as `7m`, `5h`, `2d`, `90s`, `90m`, and `25h`. A job may declare `every`
+  **or** `cron`, never both.
 - Delays are **milliseconds**, passed through unchanged to the backend.
 - Priorities are passed through unchanged; BullMQ uses values `1..2^21` with
   lower values first, while Deno KV ignores them.
