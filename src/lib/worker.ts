@@ -60,6 +60,8 @@ export function resolveJobTimeouts(
 }
 
 export class Worker {
+  private readonly inFlightPerforms = new Set<Promise<unknown>>();
+
   static async start(
     {
       jobsMap,
@@ -68,7 +70,8 @@ export class Worker {
       concurrency,
       timeoutByJobName,
     }: WorkerParams,
-  ): Promise<void> {
+  ): Promise<Worker> {
+    const worker = new Worker();
     Logger.workerStarted(jobsMap.size, { queueNames, concurrency });
 
     await backend.listen(async (payload: JobPayload) => {
@@ -90,6 +93,11 @@ export class Worker {
         const context: JobContext = { signal: controller.signal };
         const performPromise = Promise.resolve().then(() =>
           job.perform(jobBody, context)
+        );
+        worker.inFlightPerforms.add(performPromise);
+        performPromise.then(
+          () => worker.inFlightPerforms.delete(performPromise),
+          () => worker.inFlightPerforms.delete(performPromise),
         );
         performPromise.catch(() => {});
 
@@ -121,5 +129,13 @@ export class Worker {
         throw error;
       }
     }, { queueNames, concurrency });
+
+    return worker;
+  }
+
+  async awaitInFlight(): Promise<void> {
+    while (this.inFlightPerforms.size > 0) {
+      await Promise.allSettled([...this.inFlightPerforms]);
+    }
   }
 }

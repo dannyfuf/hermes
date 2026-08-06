@@ -5,12 +5,25 @@ import type {
   BackendAdapter,
   QueueStats,
   RecurringJobConfig,
+  RecurringJobValidationBackend,
 } from "../backend.ts";
+import {
+  releaseOrphanJob,
+  resetOrphanJob,
+  waitForOrphanJobStart,
+} from "./helpers/fixtures/orphan_manifest.ts";
 
 class HangingCloseBackend extends MockBackend {
   override close(options?: { force?: boolean }): Promise<void> {
     this.closeOptions.push(options);
     if (options?.force) return Promise.resolve();
+    return new Promise(() => {});
+  }
+}
+
+class FullyHangingCloseBackend extends MockBackend {
+  override close(options?: { force?: boolean }): Promise<void> {
+    this.closeOptions.push(options);
     return new Promise(() => {});
   }
 }
@@ -59,6 +72,38 @@ class DeferredRecurringBackend extends MockBackend {
 
   releaseRegistration(): void {
     this.resolveRegistrationRelease();
+  }
+}
+
+class NeverSettlingRecurringBackend extends MockBackend {
+  readonly registrationStarted: Promise<void>;
+  private resolveRegistrationStarted: () => void = () => {};
+
+  constructor() {
+    super();
+    this.registrationStarted = new Promise((resolve) => {
+      this.resolveRegistrationStarted = resolve;
+    });
+  }
+
+  override async registerRecurringJob(
+    config: RecurringJobConfig,
+  ): Promise<void> {
+    await super.registerRecurringJob(config);
+    this.resolveRegistrationStarted();
+    await new Promise(() => {});
+  }
+}
+
+class RejectingRecurringValidationBackend extends MockBackend
+  implements RecurringJobValidationBackend {
+  validatedRecurringJobs: RecurringJobConfig[] = [];
+
+  validateRecurringJobs(
+    configs: readonly RecurringJobConfig[],
+  ): Promise<void> {
+    this.validatedRecurringJobs = [...configs];
+    return Promise.reject(new Error("derived cron name collision"));
   }
 }
 
@@ -128,6 +173,27 @@ Deno.test("Hermes", async (t) => {
   });
 
   await t.step(
+    "start() rejects when stop() was requested before the first start",
+    async () => {
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new MockBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+        backend,
+      });
+
+      await hermes.stop();
+      await assertRejects(
+        () => hermes.start(),
+        Error,
+        "stop() was already requested; create a new Hermes instance",
+      );
+      assertEquals(backend.isListening, false);
+      clearBackend();
+    },
+  );
+
+  await t.step(
     "stop() force-closes after the graceful timeout and is idempotent",
     async () => {
       const { Hermes } = await import("../hermes.ts");
@@ -156,6 +222,97 @@ Deno.test("Hermes", async (t) => {
         "worker_stopped",
       ]);
       assertEquals(logEntries[1].gracefulShutdownTimeoutMs, 10);
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "stop() gives up after the fixed force-close deadline",
+    async () => {
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new FullyHangingCloseBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+        backend,
+        worker: { gracefulShutdownTimeout: 10 },
+      });
+
+      const startedAt = performance.now();
+      await hermes.stop();
+      const elapsedMs = performance.now() - startedAt;
+
+      assertEquals(elapsedMs >= 4_500, true);
+      assertEquals(elapsedMs < 7_000, true);
+      assertEquals(backend.closeOptions, [undefined, { force: true }]);
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "graceful stop waits for a timed-out perform body that ignored abort",
+    async () => {
+      clearBackend();
+      resetOrphanJob();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new MockBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/orphan_manifest.ts",
+        backend,
+        worker: { gracefulShutdownTimeout: 500 },
+      });
+      await hermes.start();
+
+      const processing = backend.process({
+        jobName: "orphan_job",
+        queueName: "default",
+        jobBody: null,
+      });
+      await waitForOrphanJobStart();
+      await assertRejects(() => processing, Error, "timed out");
+
+      let stopSettled = false;
+      const stopping = hermes.stop().then(() => {
+        stopSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assertEquals(stopSettled, false);
+
+      releaseOrphanJob();
+      await stopping;
+      assertEquals(stopSettled, true);
+      assertEquals(backend.closeOptions, [undefined]);
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "force stop does not wait for a timed-out perform body",
+    async () => {
+      clearBackend();
+      resetOrphanJob();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new MockBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/orphan_manifest.ts",
+        backend,
+        worker: { gracefulShutdownTimeout: 20 },
+      });
+      await hermes.start();
+
+      const processing = backend.process({
+        jobName: "orphan_job",
+        queueName: "default",
+        jobBody: null,
+      });
+      await waitForOrphanJobStart();
+      await assertRejects(() => processing, Error, "timed out");
+
+      const startedAt = performance.now();
+      await hermes.stop();
+      assertEquals(performance.now() - startedAt < 250, true);
+      assertEquals(backend.closeOptions, [undefined, { force: true }]);
+
+      releaseOrphanJob();
       clearBackend();
     },
   );
@@ -210,6 +367,37 @@ Deno.test("Hermes", async (t) => {
   });
 
   await t.step(
+    "a failed start is terminal and subsequent start reports the original failure",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new MockBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+        backend,
+        worker: { defaultJobTimeout: "eventually" },
+      });
+
+      await assertRejects(
+        () => hermes.start(),
+        Error,
+        'Invalid timeout for job "recurring_every_job"',
+      );
+      await assertRejects(
+        () => hermes.start(),
+        Error,
+        "A previous Hermes start() failed (Invalid timeout for job",
+      );
+      await assertRejects(
+        () => hermes.start(),
+        Error,
+        "create a new Hermes instance",
+      );
+      clearBackend();
+    },
+  );
+
+  await t.step(
     "start() rejects job timeouts above the timer ceiling",
     async () => {
       clearBackend();
@@ -255,6 +443,53 @@ Deno.test("Hermes", async (t) => {
         assertEquals(backend.isListening, false);
         assertEquals(backend.registeredRecurringJobs, []);
       }
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "start() rejects invalid concurrency before recurrence registration",
+    async () => {
+      for (const concurrency of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
+        clearBackend();
+        const { Hermes } = await import("../hermes.ts");
+        const backend = new MockBackend();
+        const hermes = Hermes({
+          manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+          backend,
+          worker: { concurrency },
+        });
+
+        await assertRejects(
+          () => hermes.start(),
+          Error,
+          "Invalid worker.concurrency",
+        );
+        assertEquals(backend.registeredRecurringJobs, []);
+        assertEquals(backend.isListening, false);
+      }
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "recurring-job validation finishes before any schedule is registered",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new RejectingRecurringValidationBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+        backend,
+      });
+
+      await assertRejects(
+        () => hermes.start(),
+        Error,
+        "derived cron name collision",
+      );
+      assertEquals(backend.validatedRecurringJobs.length, 1);
+      assertEquals(backend.registeredRecurringJobs, []);
       clearBackend();
     },
   );
@@ -306,6 +541,30 @@ Deno.test("Hermes", async (t) => {
       await Promise.all([startPromise, stopPromise]);
       assertEquals(backend.isListening, false);
       assertEquals(backend.closeOptions, [undefined]);
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "stop() bounds a blocked startup and force-closes partial backend state",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new NeverSettlingRecurringBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+        backend,
+        worker: { gracefulShutdownTimeout: 20 },
+      });
+
+      void hermes.start();
+      await backend.registrationStarted;
+      const startedAt = performance.now();
+      await hermes.stop();
+
+      assertEquals(performance.now() - startedAt < 250, true);
+      assertEquals(backend.closeOptions, [{ force: true }]);
+      assertEquals(backend.isListening, false);
       clearBackend();
     },
   );
