@@ -5,6 +5,7 @@ type SinkPayload = {
   sinkPath: string;
   marker: string;
   durationMs?: number;
+  childMarker?: string;
 };
 
 function requiredEnv(name: string): string {
@@ -150,6 +151,26 @@ export class MetadataEchoJob extends Job {
       event: "metadata_echo",
       marker: body.marker,
       metadata: context?.metadata ?? null,
+    });
+  }
+}
+
+export class ChainParentJob extends Job {
+  readonly jobName = "chain_parent";
+  readonly queueName = queueName();
+
+  async perform(jobBody: unknown): Promise<void> {
+    const body = jobBody as SinkPayload;
+    // Job → job chain: enqueue the child from inside perform(). The child
+    // enqueue goes through the same global registries, so a configured
+    // enqueueMetadata hook must stamp it.
+    await new MetadataEchoJob().performLater({
+      sinkPath: body.sinkPath,
+      marker: body.childMarker ?? `${body.marker}-child`,
+    });
+    await appendLine(body.sinkPath, {
+      event: "chain_parent",
+      marker: body.marker,
     });
   }
 }

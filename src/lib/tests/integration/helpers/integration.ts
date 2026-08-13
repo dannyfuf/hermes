@@ -13,6 +13,7 @@ import {
   BullMQBackend,
   type BullMQBackendOptions,
 } from "../../../backends/bullmq.ts";
+import { clearHooks, clearLoggerSink } from "../../../hooks_registry.ts";
 import { type RedisTestConfig, redisTestConfig } from "./env_local.ts";
 
 export type SinkRecord = Record<string, unknown>;
@@ -179,6 +180,11 @@ export class IntegrationScope {
 
   async cleanup(): Promise<void> {
     let cleanupError: unknown;
+
+    // Tests may register hooks or a logger sink via Hermes()/configure();
+    // both are module-global, so clear them before the next test runs.
+    clearHooks();
+    clearLoggerSink();
 
     for (const instance of this.instances.toReversed()) {
       try {
