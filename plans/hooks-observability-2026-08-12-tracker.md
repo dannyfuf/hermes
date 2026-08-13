@@ -50,16 +50,20 @@
 - [x] **Phase 4 gate:** check + test green; throwing sink cannot break dispatch; no-sink output byte-identical. (verified: check OK; test → 85 passed (122 steps), 0 failed, 1 ignored; KNOWN_GAPS `info`/`warn` no-emission-path item confirmed still listed and still true — the sink adds transport, not emission paths)
 
 ### Phase 5 — Integration tests and final sweep
-- [ ] P5-T01 — BullMQ integration: metadata round-trip + row-3 retry invariant (§7.5 #9) — must EXECUTE, not skip (Redis is available here)
-- [ ] P5-T02 — Deno KV integration: structured-clone round-trip + metadata-free tick (§7.5 #10)
-- [ ] P5-T03 — Final sweep: zero-backend-diff check, formatting, docs consistency
-- [ ] **Phase 5 gate:** full Definition of done in the plan checked off.
+- [x] P5-T01 — BullMQ integration: metadata round-trip + row-3 retry invariant (§7.5 #9) — EXECUTED against local Redis (H1, H1b, H2 in `hooks.integration.test.ts` all show `ok` in the run output, not skipped)
+- [x] P5-T02 — Deno KV integration: structured-clone round-trip + metadata-free tick (§7.5 #10) — real temp-dir KV store; the tick test exercises the registration-built 3-field payload through the real KV queue (driving a real `Deno.cron` tick is impractical in-test — minimum 1-minute granularity; see note below)
+- [x] P5-T03 — Final sweep: zero-backend-diff check, formatting, docs consistency (verified: `git diff --stat 17aef78 -- src/lib/backends/ src/lib/backend.ts` empty; check OK; lint clean; `deno fmt --check` clean on all 20 touched files; no `npm:` imports reachable from root; README hooks/sink/logging sections proofread)
+- [x] **Phase 5 gate:** full Definition of done in the plan checked off. (final: `deno task test` → 90 passed (122 steps), 0 failed, 1 ignored — the pre-existing slow-gated test behind `HERMES_SLOW_TESTS`)
 
 ## Notes / decisions log
 (Append-only. Date-stamp entries. Capture anything that surprised you or that future-you will want.)
 
 - 2026-08-12 — Plan authored against repo @ `17aef78` (matches the design doc's verified facts). Local Redis verified up (`redis-cli ping` → `PONG`) at planning time — re-verify at kickoff.
 - 2026-08-12 — Pre-resolved in the plan's Assumptions (record here if you deviate): type-alias style kept; `LogEvent` stays in logger.ts with a type-only re-export from main.ts; registration is replace-on-call (omitted hooks/logger clears); `Readonly<JobPayload>` is type-level only.
+- 2026-08-12 — Implementation complete. No deviations from the Assumptions. The type-only `types.ts → logger.ts` import for `LogEvent` caused no `deno check` complaints (no runtime cycle: `logger.ts → hooks_registry.ts → types.ts` is type-only at the last hop), so `LogEvent` stayed in logger.ts as planned.
+- 2026-08-12 — P5-T02 tick test: exercised the registration-built 3-field payload through the real KV queue via `backend.enqueue(...)` — this is byte-for-byte the payload the `Deno.cron` closure enqueues (verified in `deno_kv.ts` `registerRecurringJob`); a real cron tick was not driven (1-minute minimum granularity).
+- 2026-08-12 — Beyond the plan's required tests, added: row-2 variant (wrapper substitute error never replaces next's error), hung-wrapper-after-next-resolved (timeout budget + in-flight slot), no-wrapper-configured control, unknown-job-skips-before-wrapper, H1b (metadata-less payload → undefined context metadata on real Redis), and no-sink console-unchanged.
+- 2026-08-12 — `IntegrationScope.hermes()` gained an optional 4th param `{ hooks?, logger? }` (test helper only; passes through to `Hermes()`).
 
 ## Follow-ups
 (Things discovered mid-flight that are out of scope for this plan. Each gets a one-line description.)

@@ -3,7 +3,9 @@ import { Queue } from "bullmq";
 import { Hermes } from "../../../../main.ts";
 import type {
   BackendAdapter,
+  HermesHooks,
   HermesInstance,
+  LoggerSink,
   QueueStats,
   WorkerConfig,
 } from "../../../../main.ts";
@@ -147,11 +149,13 @@ export class IntegrationScope {
     manifest: string,
     backend: BackendAdapter,
     worker: WorkerConfig = {},
+    extras: { hooks?: HermesHooks; logger?: LoggerSink } = {},
   ): HermesInstance {
     const instance = Hermes({
       manifest,
       backend,
       worker: { gracefulShutdownTimeout: 250, ...worker },
+      ...extras,
     });
     this.instances.push(instance);
     return instance;

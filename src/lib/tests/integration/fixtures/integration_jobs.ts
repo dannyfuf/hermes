@@ -140,6 +140,20 @@ export class DelayTimedJob extends Job {
   }
 }
 
+export class MetadataEchoJob extends Job {
+  readonly jobName = "metadata_echo";
+  readonly queueName = queueName();
+
+  async perform(jobBody: unknown, context?: JobContext): Promise<void> {
+    const body = jobBody as SinkPayload;
+    await appendLine(body.sinkPath, {
+      event: "metadata_echo",
+      marker: body.marker,
+      metadata: context?.metadata ?? null,
+    });
+  }
+}
+
 export class FlakyJob extends Job {
   readonly jobName = "flaky";
   readonly queueName = queueName();
