@@ -7,6 +7,9 @@
     ".": "./src/main.ts",
     "./backends/bullmq": "./src/lib/backends/bullmq.ts"
   },
+  "publish": {
+    "exclude": ["src/lib/tests/", "plans/", ".github/", ".claude/"]
+  },
   "tasks": {
     "dev": "deno run --watch main.ts",
     "worker": "deno run --unstable-kv --unstable-cron example/worker.ts",
