@@ -2,16 +2,31 @@ import { JobLoader } from "./job_loader.ts";
 import { ManifestLoader } from "./manifest_loader.ts";
 import { MAX_TIMEOUT_MS, resolveJobTimeouts, Worker } from "./worker.ts";
 import { setBackend } from "./backend_registry.ts";
+import {
+  clearHooks,
+  clearLoggerSink,
+  setHooks,
+  setLoggerSink,
+} from "./hooks_registry.ts";
 import type {
   BackendAdapter,
   QueueStats,
   RecurringJobConfig,
   RecurringJobValidationBackend,
 } from "./backend.ts";
-import type { HermesParams } from "./types.ts";
+import type { HermesHooks, HermesParams, LoggerSink } from "./types.ts";
 import { Logger } from "./logger.ts";
 
 const FORCE_CLOSE_TIMEOUT_MS = 5_000;
+
+// Every registration call fully replaces the previous one: omitted hooks or
+// logger clears any earlier registration, mirroring how setBackend overwrites.
+function registerObservability(hooks?: HermesHooks, logger?: LoggerSink): void {
+  if (hooks) setHooks(hooks);
+  else clearHooks();
+  if (logger) setLoggerSink(logger);
+  else clearLoggerSink();
+}
 
 /** A running Hermes instance that manages job workers. */
 export interface HermesInstance {
@@ -34,6 +49,7 @@ class THermes implements HermesInstance {
   constructor(params: HermesParams) {
     this.params = params;
     setBackend(params.backend);
+    registerObservability(params.hooks, params.logger);
   }
 
   start(): Promise<void> {
@@ -282,9 +298,17 @@ export const Hermes = (params: HermesParams): HermesInstance => {
   return new THermes(params);
 };
 
-/** Configure the global backend adapter for standalone job enqueueing without starting a worker. */
+/** Configure the global backend adapter for standalone job enqueueing without
+ * starting a worker. `aroundPerform` is excluded by type — enqueue-only
+ * processes never execute jobs. Omitted `hooks`/`logger` clears any previous
+ * registration. */
 export const configure = (
-  { backend }: { backend: BackendAdapter },
+  { backend, hooks, logger }: {
+    backend: BackendAdapter;
+    hooks?: Pick<HermesHooks, "enqueueMetadata">;
+    logger?: LoggerSink;
+  },
 ): void => {
   setBackend(backend);
+  registerObservability(hooks, logger);
 };

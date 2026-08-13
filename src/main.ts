@@ -27,12 +27,15 @@ export type {
   RecurringJobConfig,
 } from "./lib/backend.ts";
 export type {
+  HermesHooks,
   HermesParams,
   JobContext,
   JobPayload,
+  LoggerSink,
   PerformLaterOptions,
   WorkerConfig,
 } from "./lib/types.ts";
+export type { LogEvent } from "./lib/logger.ts";
 export type {
   EveryInterval,
   RecurringSchedule,
