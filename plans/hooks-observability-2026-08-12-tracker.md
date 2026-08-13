@@ -29,10 +29,10 @@
 - [x] **Phase 1 gate:** `deno task check` + `deno task test` green; zero behavior change. (verified: `deno task check` Check src/main.ts OK; `deno task test` → 81 passed (93 steps), 0 failed, 1 ignored — same pre-existing slow-gated skip as baseline)
 
 ### Phase 2 — Enqueue path
-- [ ] P2-T01 — Run enqueueMetadata and merge in performLater
-- [ ] P2-T02 — Unit tests for the enqueue path (§7.5 #1, #2, #3)
-- [ ] P2-T03 — README: performLater metadata + enqueueMetadata (same commits as P2 code)
-- [ ] **Phase 2 gate:** check + test green; no-hooks payload byte-identical (test #1).
+- [x] P2-T01 — Run enqueueMetadata and merge in performLater
+- [x] P2-T02 — Unit tests for the enqueue path (§7.5 #1, #2, #3)
+- [x] P2-T03 — README: performLater metadata + enqueueMetadata (same commits as P2 code)
+- [x] **Phase 2 gate:** check + test green; no-hooks payload byte-identical (test #1). (verified: check OK; test → 82 passed (101 steps), 0 failed, 1 ignored)
 
 ### Phase 3 — Execution path and outcome protection (highest risk)
 - [ ] P3-T01 — Deliver JobContext.metadata in the worker

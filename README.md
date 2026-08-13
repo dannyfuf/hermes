@@ -322,6 +322,54 @@ await new PaymentJob().performLater(payload, { priority: 1 });
 The priority is also applied to recurring jobs. Deno KV accepts the portable API
 but ignores priority.
 
+## Metadata and Hooks
+
+### Per-call metadata
+
+Attach opaque metadata to any enqueue. It rides the payload envelope, is never
+interpreted by Hermes, and must be JSON/structured-clone serializable — the same
+constraint `jobBody` already has:
+
+```typescript
+await new ExportJob().performLater(body, {
+  metadata: { requestedBy: user.id, idempotencyKey },
+});
+```
+
+### `enqueueMetadata` hook
+
+Register hooks via `Hermes({ hooks })` in worker processes or
+`configure({ hooks })` in enqueue-only processes (a web server). Each
+registration call fully replaces the previous one — omitting `hooks` or `logger`
+clears any earlier registration.
+
+`enqueueMetadata` runs synchronously inside every `performLater()` call, before
+the payload reaches the backend. Its only power is contributing metadata: it
+receives the read-only payload (built without metadata at that point) and
+returns a record or `undefined`. Hook keys are merged under per-call
+`opts.metadata` keys — explicit wins on collision. If the merged result is
+empty, the payload gets no `metadata` key at all, so a no-hooks enqueue is
+byte-identical to previous versions.
+
+```typescript
+configure({
+  backend: BullMQBackend({ connection }),
+  hooks: {
+    enqueueMetadata: () => {
+      const ctx = getTraceContext(); // e.g. reads AsyncLocalStorage
+      return ctx && { traceId: ctx.traceId, parentSpanId: ctx.spanId };
+    },
+  },
+});
+
+// later, in a request handler:
+await new SendReceiptJob().performLater({ orderId }); // stamped automatically
+```
+
+A throwing `enqueueMetadata` hook **fails the `performLater()` call and nothing
+is enqueued** — there is a live caller in the stack who can see and handle the
+error, and silently dropping metadata would be invisible corruption.
+
 ## Execution Timeouts and Cooperative Cancellation
 
 > **Production recommendation:** always set `worker.defaultJobTimeout` or a
@@ -495,7 +543,7 @@ in progress, startup cancellation is cooperative: `start()` may resolve without
 a live worker after the current startup step settles, while `stop()` remains
 bounded by the shutdown deadline.
 
-### `configure({ backend })`
+### `configure({ backend, hooks?, logger? })`
 
 Sets the global backend for enqueuing jobs without starting a worker. Use this
 in processes that only enqueue (e.g., a web server):
@@ -506,6 +554,11 @@ import { configure, DenoKvBackend } from "@dafu/hermes";
 configure({ backend: DenoKvBackend() });
 // Now you can call job.performLater() anywhere in this process
 ```
+
+`configure()` also accepts `hooks` (only `enqueueMetadata` — `aroundPerform` is
+excluded by type because enqueue-only processes never execute jobs) and a
+`logger` sink. Registration replaces: omitting `hooks` or `logger` clears any
+previous registration.
 
 ### `Job` (abstract class)
 
@@ -562,6 +615,7 @@ type JobPayload = {
 type PerformLaterOptions = {
   delay?: number; // Delay in milliseconds
   priority?: number; // BullMQ: lower values run first
+  metadata?: Record<string, unknown>; // Opaque; merged over hook metadata
 };
 
 type JobContext = {
