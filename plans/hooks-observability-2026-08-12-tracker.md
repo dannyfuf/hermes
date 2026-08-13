@@ -35,12 +35,12 @@
 - [x] **Phase 2 gate:** check + test green; no-hooks payload byte-identical (test #1). (verified: check OK; test → 82 passed (101 steps), 0 failed, 1 ignored)
 
 ### Phase 3 — Execution path and outcome protection (highest risk)
-- [ ] P3-T01 — Deliver JobContext.metadata in the worker
-- [ ] P3-T02 — Implement the aroundPerform wrapper with outcome protection
-- [ ] P3-T03 — Unit tests: outcome matrix, one per row 1–9 (§7.5 #4)
-- [ ] P3-T04 — Unit tests: context delivery, scheduled-run pin, job→job chain (§7.5 #5, #6, #8)
-- [ ] P3-T05 — Same-commit docs: CONTEXT principle 3, KNOWN_GAPS metadata item, README aroundPerform + hook_error
-- [ ] **Phase 3 gate:** check + test green; nine row tests passing; `git diff --stat 17aef78 -- src/lib/backends/ src/lib/backend.ts` empty.
+- [x] P3-T01 — Deliver JobContext.metadata in the worker
+- [x] P3-T02 — Implement the aroundPerform wrapper with outcome protection
+- [x] P3-T03 — Unit tests: outcome matrix, one per row 1–9 (§7.5 #4)
+- [x] P3-T04 — Unit tests: context delivery, scheduled-run pin, job→job chain (§7.5 #5, #6, #8)
+- [x] P3-T05 — Same-commit docs: CONTEXT principle 3, KNOWN_GAPS metadata item, README aroundPerform + hook_error
+- [x] **Phase 3 gate:** check + test green; nine row tests passing; `git diff --stat 17aef78 -- src/lib/backends/ src/lib/backend.ts` empty. (verified: check OK; test → 84 passed (117 steps), 0 failed, 1 ignored; lint clean; backend diff empty. Beyond the 9 rows: extra tests for wrapper-substitute-error, hung-wrapper-after-next-resolved, no-hook path, and unknown-job-skips-before-wrapper.)
 
 ### Phase 4 — Logger sink and metadata echo
 - [ ] P4-T01 — Route Logger.log through the guarded sink

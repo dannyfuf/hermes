@@ -352,6 +352,56 @@ Deno.test("Worker", async (t) => {
   );
 
   await t.step(
+    "delivers payload.metadata verbatim in the job context",
+    async () => {
+      let seenMetadata: unknown = "unset";
+
+      class MetadataProbeJob extends Job {
+        readonly jobName = "metadata_probe_job";
+        readonly queueName = "default";
+
+        // deno-lint-ignore require-await
+        async perform(
+          _jobBody: unknown,
+          context?: JobContext,
+        ): Promise<unknown> {
+          seenMetadata = context?.metadata;
+          return null;
+        }
+      }
+
+      const backend = new MockBackend();
+      // deno-lint-ignore no-explicit-any
+      const jobsMap = new Map<string, any>([
+        ["metadata_probe_job", MetadataProbeJob],
+      ]);
+      await Worker.start({
+        jobsMap,
+        backend,
+        timeoutByJobName: resolveJobTimeouts(jobsMap),
+      });
+
+      const metadata = { traceId: "t-1", nested: { deep: true } };
+      await backend.process({
+        jobName: "metadata_probe_job",
+        queueName: "default",
+        jobBody: null,
+        metadata,
+      });
+      assertEquals(seenMetadata, metadata);
+
+      // Payload without metadata (scheduled runs, older enqueuers):
+      // context.metadata is undefined — the "start fresh" signal.
+      await backend.process({
+        jobName: "metadata_probe_job",
+        queueName: "default",
+        jobBody: null,
+      });
+      assertEquals(seenMetadata, undefined);
+    },
+  );
+
+  await t.step(
     "measures duration and logs for succeeded jobs",
     async () => {
       clearPerformCalls();

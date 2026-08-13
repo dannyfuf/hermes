@@ -186,6 +186,22 @@ export class Logger {
     });
   }
 
+  static hookError(
+    hook: string,
+    jobName: string,
+    queueName: string,
+    error: unknown,
+  ): void {
+    this.log({
+      timestamp: this.formatTimestamp(),
+      event: "hook_error",
+      hook,
+      jobName,
+      queueName,
+      error: this.errorMessage(error),
+    });
+  }
+
   static info(message: string, data?: Record<string, unknown>): void {
     this.log({
       timestamp: this.formatTimestamp(),

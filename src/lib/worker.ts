@@ -1,4 +1,10 @@
-import type { JobContext, JobPayload, WorkerParams } from "./types.ts";
+import type {
+  HermesHooks,
+  JobContext,
+  JobPayload,
+  WorkerParams,
+} from "./types.ts";
+import { getHooks } from "./hooks_registry.ts";
 import { Logger } from "./logger.ts";
 import { intervalToMs, parseEveryInterval } from "./schedule.ts";
 
@@ -42,6 +48,75 @@ export function resolveTimeoutMs(
   }
 
   return timeoutMs;
+}
+
+/**
+ * Runs `perform` inside the `aroundPerform` wrapper while keeping the job's
+ * outcome exactly `next()`'s outcome. The wrapper is a lens, not a valve:
+ * its faults are logged as `hook_error` events, never substituted for the
+ * perform result. The returned promise settles only after BOTH the wrapper
+ * and (if invoked) the perform have settled, so timeout racing, in-flight
+ * tracking, and graceful shutdown cover hung wrappers too.
+ */
+async function wrapPerform(
+  wrapper: NonNullable<HermesHooks["aroundPerform"]>,
+  payload: JobPayload,
+  perform: () => Promise<unknown>,
+): Promise<unknown> {
+  const { jobName, queueName } = payload;
+
+  // Hermes owns next: the first call creates the perform promise, every
+  // later call returns the same one — a wrapper can never run a job twice.
+  let performPromise: Promise<unknown> | undefined;
+  const next = (): Promise<unknown> => {
+    if (performPromise === undefined) {
+      performPromise = Promise.resolve().then(perform);
+      // The outcome is awaited below; keep an early rejection from surfacing
+      // as unhandled while the wrapper is still running.
+      performPromise.catch(() => {});
+    }
+    return performPromise;
+  };
+
+  let wrapperError: unknown;
+  let wrapperRejected = false;
+  try {
+    await wrapper(payload, next);
+  } catch (error) {
+    wrapperError = error;
+    wrapperRejected = true;
+  }
+
+  if (performPromise === undefined) {
+    // next() never ran, so the job never executed: fail it with the most
+    // informative error available.
+    const error = wrapperRejected
+      ? wrapperError
+      : new Error("aroundPerform completed without invoking next()");
+    Logger.hookError("aroundPerform", jobName, queueName, error);
+    throw error;
+  }
+
+  try {
+    const result = await performPromise;
+    // The job did its work; a wrapper fault must not fail it and trigger a
+    // phantom retry.
+    if (wrapperRejected) {
+      Logger.hookError("aroundPerform", jobName, queueName, wrapperError);
+    }
+    return result;
+  } catch (error) {
+    // The wrapper swallowed the failure; the backend still sees it.
+    if (!wrapperRejected) {
+      Logger.hookError(
+        "aroundPerform",
+        jobName,
+        queueName,
+        new Error("aroundPerform resolved after next() rejected"),
+      );
+    }
+    throw error;
+  }
 }
 
 export function resolveJobTimeouts(
@@ -90,10 +165,18 @@ export class Worker {
       try {
         const job = new jobClass();
         const controller = new AbortController();
-        const context: JobContext = { signal: controller.signal };
-        const performPromise = Promise.resolve().then(() =>
-          job.perform(jobBody, context)
-        );
+        const context: JobContext = {
+          signal: controller.signal,
+          metadata: payload.metadata,
+        };
+        const aroundPerform = getHooks()?.aroundPerform;
+        const performPromise = aroundPerform
+          ? wrapPerform(
+            aroundPerform,
+            payload,
+            () => job.perform(jobBody, context),
+          )
+          : Promise.resolve().then(() => job.perform(jobBody, context));
         worker.inFlightPerforms.add(performPromise);
         performPromise.then(
           () => worker.inFlightPerforms.delete(performPromise),

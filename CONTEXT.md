@@ -77,13 +77,16 @@ mechanisms; extend the manifest convention instead.
 bug. The path must remain caller-configurable, resolved relative to `Deno.cwd()`
 (absolute paths and `http(s)://`/`file://` URLs pass through).
 
-### 3. `BackendAdapter` is the only extension point
+### 3. `BackendAdapter` is the only extension point for queue mechanics
 
 The core (Job, Worker, Hermes, loaders) depends exclusively on the
 `BackendAdapter` interface — never on Deno KV, BullMQ, or any concrete queue.
-This was the project's defining architectural refactor: `performLater()`
-originally called `Deno.openKv()` directly, and that coupling was deliberately
-removed in a breaking release.
+The hooks surface (`HermesHooks`, logger sink) is the observability seam; it is
+deliberately outcome-inert and must stay that way — any hook that could alter
+whether/how a job runs is a design violation, not a feature request. This was
+the project's defining architectural refactor: `performLater()` originally
+called `Deno.openKv()` directly, and that coupling was deliberately removed in a
+breaking release.
 
 The contract lives in `src/lib/backend.ts` (authoritative source; shape at the
 time of writing):

@@ -6,13 +6,13 @@
 > here; when you discover one, add it. Don't rediscover items on this list, and
 > when working nearby, prefer closing one over working around it.
 >
-> Last reviewed: 2026-08-12, `main` @ `3cdb67d` (0.3.0 working tree).
+> Last reviewed: 2026-08-12, `main` @ `17aef78` + hooks/observability work
+> (0.3.0 working tree).
 
 ## Documented or typed but not implemented
 
 Wire these up or descope them — don't build parallel mechanisms next to them.
 
-- `JobPayload.metadata` exists but is never populated or read.
 - `removeRecurringJob?()` is in the `BackendAdapter` contract and implemented by
   the test mock, but no concrete backend implements it and Hermes never calls it
   — recurring-schedule cleanup is an open problem (renamed jobs orphan their

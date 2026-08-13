@@ -370,6 +370,87 @@ A throwing `enqueueMetadata` hook **fails the `performLater()` call and nothing
 is enqueued** — there is a live caller in the stack who can see and handle the
 error, and silently dropping metadata would be invisible corruption.
 
+### Reading metadata in the job
+
+`JobContext.metadata` carries `payload.metadata` verbatim:
+
+```typescript
+async perform(body: unknown, ctx?: JobContext): Promise<void> {
+  console.log("requested by", ctx?.metadata?.requestedBy);
+}
+```
+
+`ctx.metadata` is `undefined` for scheduled/recurring runs and for payloads
+enqueued by older versions — that is the documented signal for "no ambient
+context, start fresh". Recurring schedules never receive enqueue-time metadata:
+stamping boot-time context onto every future tick would be wrong by
+construction.
+
+### `aroundPerform` hook
+
+`aroundPerform` wraps every job execution in the worker — the seam for tracing,
+error reporting, and ambient context (e.g. AsyncLocalStorage). It is registered
+via `Hermes({ hooks })` only; enqueue-only processes have nothing to wrap.
+
+```typescript
+const hermes = Hermes({
+  manifest: "./jobs/main.ts",
+  backend: BullMQBackend({ connection }),
+  hooks: {
+    aroundPerform: async (payload, next) => {
+      const ctx = payload.metadata // undefined → scheduled run or old payload
+        ? childOf(payload.metadata)
+        : freshTrace(payload.jobName);
+      await runWithTraceContext(ctx, async () => {
+        try {
+          await next();
+        } catch (err) {
+          reportError(err, ctx);
+          throw err; // rethrow optional: the outcome is protected either way
+        }
+      });
+    },
+  },
+});
+```
+
+The contract: the wrapper **MUST call `next()` exactly once and SHOULD await
+it**. The job's outcome is `next()`'s outcome, always — `aroundPerform` is
+deliberately **outcome-inert**, enforced by mechanism rather than convention:
+
+- A wrapper that swallows `next()`'s rejection cannot fake a success: the
+  failure is still rethrown to the backend, so retries stay intact, and a
+  `hook_error` event is logged.
+- A wrapper that throws after `next()` resolved cannot fail a job that already
+  did its work (no phantom retry / duplicate execution) — the wrapper's error is
+  logged as `hook_error` instead.
+- Calling `next()` twice returns the same promise: a job can never run twice.
+- Forgetting to call `next()` fails the job with
+  `aroundPerform completed without invoking next()` — the job never executed, so
+  failing loudly is safe.
+- A wrapper that resolves while `next()` is still pending doesn't detach the
+  job: Hermes awaits `next()` regardless.
+
+Note the asymmetry with `enqueueMetadata`: enqueue-hook throws fail the caller,
+but execution-hook faults **never fail the job** — at execution time there is no
+caller to inform, and failing jobs on observability bugs converts monitoring
+problems into retry storms and duplicate side effects.
+
+Wrapper time counts against the job's timeout budget, and a hung wrapper holds
+the in-flight slot through graceful shutdown — wrappers should be thin.
+
+There is no middleware framework; composition is plain function composition:
+
+```typescript
+const compose = (...fns: AroundPerform[]): AroundPerform => (payload, next) =>
+  fns.reduceRight<() => Promise<unknown>>(
+    (n, fn) => async () => {
+      await fn(payload, n);
+    },
+    next,
+  )();
+```
+
 ## Execution Timeouts and Cooperative Cancellation
 
 > **Production recommendation:** always set `worker.defaultJobTimeout` or a
@@ -620,6 +701,7 @@ type PerformLaterOptions = {
 
 type JobContext = {
   signal: AbortSignal;
+  metadata?: Record<string, unknown>; // payload.metadata, verbatim
 };
 
 // Worker configuration
@@ -674,6 +756,7 @@ Hermes emits structured JSON logs for all job lifecycle events:
 | `job_stalled`              | BullMQ detected a stalled job                                          |
 | `job_skipped`              | Deno KV rejected a delivery because its queue was not configured       |
 | `unknown_job`              | Received a job with an unregistered `jobName`                          |
+| `hook_error`               | An `aroundPerform` wrapper misbehaved (the job outcome was unaffected) |
 | `recurring_job_registered` | A recurring job schedule was registered at startup                     |
 | `recurring_job_skipped`    | A recurring job schedule registration was skipped                      |
 | `worker_error`             | A BullMQ worker connection/runtime error occurred                      |
