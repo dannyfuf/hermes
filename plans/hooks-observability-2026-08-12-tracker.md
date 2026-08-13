@@ -43,11 +43,11 @@
 - [x] **Phase 3 gate:** check + test green; nine row tests passing; `git diff --stat 17aef78 -- src/lib/backends/ src/lib/backend.ts` empty. (verified: check OK; test → 84 passed (117 steps), 0 failed, 1 ignored; lint clean; backend diff empty. Beyond the 9 rows: extra tests for wrapper-substitute-error, hung-wrapper-after-next-resolved, no-hook path, and unknown-job-skips-before-wrapper.)
 
 ### Phase 4 — Logger sink and metadata echo
-- [ ] P4-T01 — Route Logger.log through the guarded sink
-- [ ] P4-T02 — Echo metadata on the four job lifecycle events
-- [ ] P4-T03 — Unit tests for the sink (§7.5 #7)
-- [ ] P4-T04 — Same-commit docs: CONTEXT principle 8, README sink section + logger_error + size warning
-- [ ] **Phase 4 gate:** check + test green; throwing sink cannot break dispatch; no-sink output byte-identical.
+- [x] P4-T01 — Route Logger.log through the guarded sink
+- [x] P4-T02 — Echo metadata on the four job lifecycle events
+- [x] P4-T03 — Unit tests for the sink (§7.5 #7)
+- [x] P4-T04 — Same-commit docs: CONTEXT principle 8, README sink section + logger_error + size warning
+- [x] **Phase 4 gate:** check + test green; throwing sink cannot break dispatch; no-sink output byte-identical. (verified: check OK; test → 85 passed (122 steps), 0 failed, 1 ignored; KNOWN_GAPS `info`/`warn` no-emission-path item confirmed still listed and still true — the sink adds transport, not emission paths)
 
 ### Phase 5 — Integration tests and final sweep
 - [ ] P5-T01 — BullMQ integration: metadata round-trip + row-3 retry invariant (§7.5 #9) — must EXECUTE, not skip (Redis is available here)

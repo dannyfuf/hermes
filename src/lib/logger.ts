@@ -1,3 +1,5 @@
+import { getLoggerSink } from "./hooks_registry.ts";
+
 export interface LogEvent {
   timestamp: string;
   event: string;
@@ -12,21 +14,31 @@ export class Logger {
     return new Date().toISOString();
   }
 
-  static jobReceived(jobName: string, queueName: string): void {
+  static jobReceived(
+    jobName: string,
+    queueName: string,
+    metadata?: Record<string, unknown>,
+  ): void {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "job_received",
       jobName,
       queueName,
+      ...(metadata && { metadata }),
     });
   }
 
-  static jobStarted(jobName: string, queueName: string): void {
+  static jobStarted(
+    jobName: string,
+    queueName: string,
+    metadata?: Record<string, unknown>,
+  ): void {
     this.log({
       timestamp: this.formatTimestamp(),
       event: "job_started",
       jobName,
       queueName,
+      ...(metadata && { metadata }),
     });
   }
 
@@ -34,6 +46,7 @@ export class Logger {
     jobName: string,
     queueName: string,
     duration?: number,
+    metadata?: Record<string, unknown>,
   ): void {
     this.log({
       timestamp: this.formatTimestamp(),
@@ -41,6 +54,7 @@ export class Logger {
       jobName,
       queueName,
       durationMs: duration,
+      ...(metadata && { metadata }),
     });
   }
 
@@ -49,6 +63,7 @@ export class Logger {
     queueName: string,
     error: string,
     duration?: number,
+    metadata?: Record<string, unknown>,
   ): void {
     this.log({
       timestamp: this.formatTimestamp(),
@@ -57,6 +72,7 @@ export class Logger {
       queueName,
       error,
       durationMs: duration,
+      ...(metadata && { metadata }),
     });
   }
 
@@ -235,7 +251,25 @@ export class Logger {
   }
 
   private static log(event: LogEvent): void {
-    console.log(JSON.stringify(event));
+    const sink = getLoggerSink();
+    if (!sink) {
+      console.log(JSON.stringify(event));
+      return;
+    }
+
+    try {
+      sink(event);
+    } catch (error) {
+      // A broken sink must never take down dispatch: fall back to console
+      // for the original event, then leave one logger_error breadcrumb —
+      // written to console directly so a throwing sink cannot recurse.
+      console.log(JSON.stringify(event));
+      console.log(JSON.stringify({
+        timestamp: this.formatTimestamp(),
+        event: "logger_error",
+        error: this.errorMessage(error),
+      }));
+    }
   }
 
   private static errorMessage(error: unknown): string {

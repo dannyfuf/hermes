@@ -729,6 +729,8 @@ type HermesParams = {
   manifest: string; // Path to the manifest file
   backend: BackendAdapter; // Backend instance
   worker?: WorkerConfig;
+  hooks?: HermesHooks; // enqueueMetadata / aroundPerform
+  logger?: LoggerSink; // (event: LogEvent) => void
 };
 ```
 
@@ -742,6 +744,40 @@ Hermes emits structured JSON logs for all job lifecycle events:
 {"timestamp":"2026-01-15T12:00:01.001Z","event":"job_started","jobName":"send_email","queueName":"emails"}
 {"timestamp":"2026-01-15T12:00:01.050Z","event":"job_succeeded","jobName":"send_email","queueName":"emails","durationMs":49}
 ```
+
+### Logger sink
+
+By default every event goes to `console.log(JSON.stringify(event))`. Pass a
+`logger` sink to `Hermes()` or `configure()` to redirect the stream:
+
+```typescript
+import type { LogEvent } from "@dafu/hermes";
+
+const hermes = Hermes({
+  manifest: "./jobs/main.ts",
+  backend: DenoKvBackend(),
+  logger: (event: LogEvent) => posthog.capture("hermes_log", event),
+});
+```
+
+The sink is called **synchronously** with each structured event and its return
+value is ignored — an async sink must do its own buffering and flushing; Hermes
+will not await I/O on the logging hot path. The sink should not throw, but
+Hermes guards anyway: on a throw, the original event falls back to `console.log`
+followed by a single `logger_error` event (written to the console directly — a
+broken sink can neither lose events nor recurse, and it cannot take down job
+dispatch).
+
+The four job lifecycle events (`job_received`, `job_started`, `job_succeeded`,
+`job_failed`) carry a `metadata` field when the payload does. Hermes's own lines
+fire outside any context an `aroundPerform` wrapper establishes, so the echoed
+metadata is what makes them correlatable by the sink. **Mind the size:**
+metadata rides both the payload envelope and the log stream — you own its size
+and content.
+
+Errors are strings in `LogEvent` (JSON-safe). Integrations that need the raw
+`Error` object (stack, `cause`) observe it in `aroundPerform` via `next()`'s
+rejection — log transport and error reporting are separate concerns.
 
 ### Event Types
 
@@ -757,6 +793,7 @@ Hermes emits structured JSON logs for all job lifecycle events:
 | `job_skipped`              | Deno KV rejected a delivery because its queue was not configured       |
 | `unknown_job`              | Received a job with an unregistered `jobName`                          |
 | `hook_error`               | An `aroundPerform` wrapper misbehaved (the job outcome was unaffected) |
+| `logger_error`             | The configured logger sink threw; the event fell back to the console   |
 | `recurring_job_registered` | A recurring job schedule was registered at startup                     |
 | `recurring_job_skipped`    | A recurring job schedule registration was skipped                      |
 | `worker_error`             | A BullMQ worker connection/runtime error occurred                      |

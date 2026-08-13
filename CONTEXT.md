@@ -167,9 +167,11 @@ simple enqueue call is a core feature.
 
 Every log line is `console.log(JSON.stringify(event))` with an ISO timestamp and
 an event name (`job_started`, `job_completed`, `job_failed` with `duration_ms`,
-…). The `Logger` is static and internal — not injectable, not configurable.
-Tests assert on parsed log output; treat log event shapes as a semi-public
-contract.
+…). The sink is injectable (a `LoggerSink` function passed to `Hermes()` or
+`configure()`, guarded so a throwing sink falls back to console); event shapes
+and emission points remain the semi-public contract, and the `Logger` class
+stays internal. Tests assert on parsed log output; treat log event shapes as a
+semi-public contract.
 
 ### 9. Naming: camelCase identifiers, snake_case filenames
 

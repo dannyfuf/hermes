@@ -150,8 +150,8 @@ export class Worker {
     Logger.workerStarted(jobsMap.size, { queueNames, concurrency });
 
     await backend.listen(async (payload: JobPayload) => {
-      const { jobName, jobBody, queueName } = payload;
-      Logger.jobReceived(jobName, queueName);
+      const { jobName, jobBody, queueName, metadata } = payload;
+      Logger.jobReceived(jobName, queueName, metadata);
 
       const jobClass = jobsMap.get(jobName);
       if (!jobClass) {
@@ -160,7 +160,7 @@ export class Worker {
       }
 
       const start = Date.now();
-      Logger.jobStarted(jobName, queueName);
+      Logger.jobStarted(jobName, queueName, metadata);
 
       try {
         const job = new jobClass();
@@ -203,12 +203,18 @@ export class Worker {
             clearTimeout(timeoutId);
           }
         }
-        Logger.jobSucceeded(jobName, queueName, Date.now() - start);
+        Logger.jobSucceeded(jobName, queueName, Date.now() - start, metadata);
       } catch (error) {
         const errorMessage = error instanceof Error
           ? error.message
           : String(error);
-        Logger.jobFailed(jobName, queueName, errorMessage, Date.now() - start);
+        Logger.jobFailed(
+          jobName,
+          queueName,
+          errorMessage,
+          Date.now() - start,
+          metadata,
+        );
         throw error;
       }
     }, { queueNames, concurrency });
