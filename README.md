@@ -824,6 +824,25 @@ rejection — log transport and error reporting are separate concerns.
   `JobTimeoutError`, and frees the worker slot. Configure attempts/backoff on
   BullMQ if timed-out work should retry.
 
+## Agent Skill
+
+The repo ships an agent skill
+([`skills/hermes/SKILL.md`](./skills/hermes/SKILL.md)) that teaches coding
+agents (Claude Code, Cursor, etc.) how to work with Hermes: defining jobs,
+manifest rules, backend configuration, `every`/`cron` constraints per backend,
+timeouts, retries, hooks, and the logger sink.
+
+Copy it into your project with:
+
+```bash
+mkdir -p .claude/skills/hermes && curl -fsSL \
+  https://raw.githubusercontent.com/dannyfuf/hermes/main/skills/hermes/SKILL.md \
+  -o .claude/skills/hermes/SKILL.md
+```
+
+Claude Code picks it up automatically from `.claude/skills/`. For other agents,
+reference the file from your `AGENTS.md` or rules configuration.
+
 ## Running the Examples
 
 The repository includes working examples for both backends:
