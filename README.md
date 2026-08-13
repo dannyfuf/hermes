@@ -401,6 +401,11 @@ attempt, so a stuck backend connection cannot make `stop()` unbounded. `stop()`
 is idempotent. The configured shutdown timeout must be a positive safe integer
 no greater than `2_147_483_647` milliseconds (about 24.8 days).
 
+Backend shutdown is terminal. After `close()` (including through
+`hermes.stop()`), Deno KV and BullMQ reject new enqueue, listen, and recurring
+registration operations; BullMQ also rejects queue-stat reads. Create and
+configure a new backend instance before enqueueing more work.
+
 On graceful close, Deno KV drains tracked queue handlers before closing its KV
 handle. BullMQ pauses workers, drains active handlers, and closes Redis
 connections. Hermes also waits for timed-out `perform()` bodies that are still

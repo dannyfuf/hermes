@@ -1,4 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
+import { stub } from "@std/testing/mock";
 import type {
   BackendAdapter,
   EnqueueOptions,
@@ -115,6 +116,147 @@ Deno.test({
     } finally {
       await cleanup();
     }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: operations reject after close without reopening KV",
+  async fn() {
+    const tempDir = await Deno.makeTempDir();
+    const kvPath = `${tempDir}/test.kv`;
+    const { DenoKvBackend } = await import("../../backends/deno_kv.ts");
+    const backend = DenoKvBackend({ path: kvPath });
+
+    try {
+      await backend.close();
+      await assertRejects(
+        () =>
+          backend.enqueue({
+            jobName: "closed_enqueue",
+            queueName: "default",
+            jobBody: null,
+          }),
+        Error,
+        "Deno KV backend is closed.",
+      );
+      await assertRejects(
+        () => backend.listen(() => Promise.resolve()),
+        Error,
+        "Deno KV backend is closed.",
+      );
+      await assertRejects(
+        () =>
+          backend.registerRecurringJob!({
+            jobName: "closed_recurring",
+            queueName: "default",
+            every: "1m",
+          }),
+        Error,
+        "Deno KV backend is closed.",
+      );
+      await assertRejects(() => Deno.stat(kvPath), Deno.errors.NotFound);
+    } finally {
+      await backend.close();
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: cron callbacks are no-ops after close",
+  async fn() {
+    const tempDir = await Deno.makeTempDir();
+    const kvPath = `${tempDir}/test.kv`;
+    const { DenoKvBackend } = await import("../../backends/deno_kv.ts");
+    const backend = DenoKvBackend({ path: kvPath });
+    let cronCallback: (() => void | Promise<void>) | undefined;
+    using _cronStub = stub(
+      Deno,
+      "cron",
+      (
+        _name: string,
+        _schedule: string | Deno.CronSchedule,
+        optionsOrHandler:
+          | { backoffSchedule?: number[]; signal?: AbortSignal }
+          | (() => void | Promise<void>),
+        handler?: () => void | Promise<void>,
+      ): Promise<void> => {
+        cronCallback = typeof optionsOrHandler === "function"
+          ? optionsOrHandler
+          : handler;
+        return Promise.resolve();
+      },
+    );
+
+    try {
+      await backend.registerRecurringJob!({
+        jobName: "closed_cron",
+        queueName: "default",
+        every: "1m",
+      });
+      await backend.close();
+      await cronCallback?.();
+
+      assertEquals(cronCallback !== undefined, true);
+      await assertRejects(() => Deno.stat(kvPath), Deno.errors.NotFound);
+    } finally {
+      await backend.close();
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "DenoKvBackend: close tears down a KV handle that opens late",
+  async fn() {
+    let resolveOpenStarted: () => void = () => {};
+    let releaseOpen: () => void = () => {};
+    const openStarted = new Promise<void>((resolve) => {
+      resolveOpenStarted = resolve;
+    });
+    const openRelease = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    let closeCalls = 0;
+    let enqueueCalls = 0;
+    const fakeKv = {
+      close(): void {
+        closeCalls += 1;
+      },
+      enqueue(): Promise<void> {
+        enqueueCalls += 1;
+        return Promise.resolve();
+      },
+    } as unknown as Deno.Kv;
+    using _openKvStub = stub(
+      Deno,
+      "openKv",
+      async (_path?: string): Promise<Deno.Kv> => {
+        resolveOpenStarted();
+        await openRelease;
+        return fakeKv;
+      },
+    );
+    const { DenoKvBackend } = await import("../../backends/deno_kv.ts");
+    const backend = DenoKvBackend({ path: "deferred.kv" });
+
+    const enqueuePromise = backend.enqueue({
+      jobName: "late_open",
+      queueName: "default",
+      jobBody: null,
+    });
+    await openStarted;
+    const closePromise = backend.close();
+    releaseOpen();
+
+    await assertRejects(
+      () => enqueuePromise,
+      Error,
+      "Deno KV backend is closed.",
+    );
+    await closePromise;
+    assertEquals(closeCalls, 1);
+    assertEquals(enqueueCalls, 0);
   },
 });
 

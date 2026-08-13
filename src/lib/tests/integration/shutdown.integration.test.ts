@@ -1,4 +1,4 @@
-import { assert } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   GracefulJob,
   RescueHangsJob,
@@ -107,6 +107,64 @@ integrationTest(
         "Second stop call did not resolve promptly",
       );
       assert(performance.now() - startedAt < 250);
+    });
+  },
+);
+
+integrationTest(
+  "BullMQ close is terminal for enqueue, recurrence, and stats",
+  async () => {
+    await runIntegration("closed_backend", async (scope) => {
+      const backend = scope.backend();
+      const backendState = backend as typeof backend & {
+        queues: Map<string, unknown>;
+      };
+      await backend.enqueue({
+        jobName: "before_close",
+        queueName: scope.queueName,
+        jobBody: null,
+      });
+      await backend.close();
+
+      await withTimeout(
+        assertRejects(
+          () =>
+            backend.enqueue({
+              jobName: "after_close",
+              queueName: scope.secondaryQueueName,
+              jobBody: null,
+            }),
+          Error,
+          "BullMQ backend is closed.",
+        ),
+        250,
+        "enqueue did not fail fast after BullMQ close",
+      );
+      await withTimeout(
+        assertRejects(
+          () =>
+            backend.registerRecurringJob!({
+              jobName: "after_close_recurring",
+              queueName: scope.secondaryQueueName,
+              every: "1m",
+            }),
+          Error,
+          "BullMQ backend is closed.",
+        ),
+        250,
+        "recurring registration did not fail fast after BullMQ close",
+      );
+      await withTimeout(
+        assertRejects(
+          () => backend.getQueueStats!(scope.secondaryQueueName),
+          Error,
+          "BullMQ backend is closed.",
+        ),
+        250,
+        "stats did not fail fast after BullMQ close",
+      );
+
+      assertEquals(backendState.queues.size, 0);
     });
   },
 );

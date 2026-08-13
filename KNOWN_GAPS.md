@@ -6,7 +6,7 @@
 > here; when you discover one, add it. Don't rediscover items on this list, and
 > when working nearby, prefer closing one over working around it.
 >
-> Last reviewed: 2026-08-05, `main` @ `7496257` (0.3.0 working tree).
+> Last reviewed: 2026-08-12, `main` @ `3cdb67d` (0.3.0 working tree).
 
 ## Documented or typed but not implemented
 
@@ -35,8 +35,6 @@ Wire these up or descope them — don't build parallel mechanisms next to them.
   drift in several checked-in files (`deno fmt --check` fails on ~8 files).
   Format files you touch; formatting the whole repo will produce unrelated
   diffs.
-- BullMQ integration tests use unique queue names but never delete queues or
-  recurring schedulers, so test Redis instances accumulate state.
 - The missing-manifest test only asserts that _some_ `Error` is thrown, not the
   friendly "Job manifest not found" message; the error translator matches Deno's
   `"Module not found"` wording, so upstream message changes could silently
@@ -61,6 +59,10 @@ Wire these up or descope them — don't build parallel mechanisms next to them.
 - A failed `start()` permanently consumes that instance's startup attempt;
   callers must construct a new instance because durable schedule registration
   may already have partially succeeded.
+- Backend shutdown is terminal. Deno KV and BullMQ adapters reject enqueueing,
+  listening, and recurring-job registration after `close()`; BullMQ queue stats
+  reject as well. Construct and configure a new backend rather than reusing a
+  closed adapter.
 - Timed-out JavaScript can keep running if it ignores `JobContext.signal` and
   can overlap a backend retry. Graceful shutdown tracks those bodies until its
   deadline; force shutdown does not wait for them.

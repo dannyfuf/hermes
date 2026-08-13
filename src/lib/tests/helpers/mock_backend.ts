@@ -55,3 +55,33 @@ export class MockBackend implements BackendAdapter {
     return this.handler !== null;
   }
 }
+
+export class DeferredListenMockBackend extends MockBackend {
+  readonly listenStarted: Promise<void>;
+  private resolveListenStarted: () => void = () => {};
+  private readonly listenRelease: Promise<void>;
+  private resolveListenRelease: () => void = () => {};
+
+  constructor() {
+    super();
+    this.listenStarted = new Promise((resolve) => {
+      this.resolveListenStarted = resolve;
+    });
+    this.listenRelease = new Promise((resolve) => {
+      this.resolveListenRelease = resolve;
+    });
+  }
+
+  override async listen(
+    handler: (payload: JobPayload) => Promise<void>,
+    options?: { queueNames?: string[]; concurrency?: number },
+  ): Promise<void> {
+    this.resolveListenStarted();
+    await this.listenRelease;
+    await super.listen(handler, options);
+  }
+
+  releaseListen(): void {
+    this.resolveListenRelease();
+  }
+}

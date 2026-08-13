@@ -88,13 +88,13 @@ class THermes implements HermesInstance {
       ),
     ];
 
-    if (this.stopRequested) return;
+    if (await this.cancelStartupIfStopped()) return;
 
     // Register recurring jobs if backend supports it
     if (this.params.backend.registerRecurringJob) {
       const recurringJobs: RecurringJobConfig[] = [];
       for (const [_, jobClass] of jobsMap) {
-        if (this.stopRequested) return;
+        if (await this.cancelStartupIfStopped()) return;
         const instance = new jobClass();
         if (instance.isRecurring()) {
           if (instance.every && instance.cron) {
@@ -118,8 +118,9 @@ class THermes implements HermesInstance {
       await validationBackend.validateRecurringJobs?.(recurringJobs);
 
       for (const recurringJob of recurringJobs) {
-        if (this.stopRequested) return;
+        if (await this.cancelStartupIfStopped()) return;
         await this.params.backend.registerRecurringJob(recurringJob);
+        if (await this.cancelStartupIfStopped()) return;
         Logger.recurringJobRegistered(
           recurringJob.jobName,
           recurringJob.every || recurringJob.cron!,
@@ -127,9 +128,9 @@ class THermes implements HermesInstance {
       }
     }
 
-    if (this.stopRequested) return;
+    if (await this.cancelStartupIfStopped()) return;
 
-    this.worker = await Worker.start({
+    const worker = await Worker.start({
       jobsMap,
       backend: this.params.backend,
       queueNames,
@@ -137,8 +138,25 @@ class THermes implements HermesInstance {
       timeoutByJobName,
     });
 
+    if (await this.cancelStartupIfStopped(worker)) return;
+
+    this.worker = worker;
     this.queueNames = queueNames;
     this.started = true;
+  }
+
+  private async cancelStartupIfStopped(worker?: Worker): Promise<boolean> {
+    if (!this.stopRequested) return false;
+
+    // A backend startup operation may settle after stop() has already closed
+    // the resources known at that point. Close again before allowing start()
+    // itself to settle so late-created listeners cannot survive shutdown.
+    await Promise.all([
+      this.params.backend.close({ force: true }),
+      worker?.awaitInFlight() ?? Promise.resolve(),
+    ]);
+
+    return true;
   }
 
   stop(): Promise<void> {

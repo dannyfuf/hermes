@@ -90,7 +90,14 @@ class TBullMQBackend implements BackendAdapter {
     };
   }
 
+  private ensureOpen(): void {
+    if (this.closed) {
+      throw new Error("BullMQ backend is closed.");
+    }
+  }
+
   private getOrCreateQueue(queueName: string): Queue {
+    this.ensureOpen();
     if (!this.queues.has(queueName)) {
       const queue = new Queue(queueName, {
         connection: this.options.connection,
@@ -116,6 +123,7 @@ class TBullMQBackend implements BackendAdapter {
     handler: (payload: JobPayload) => Promise<void>,
     options?: { queueNames?: string[]; concurrency?: number },
   ): Promise<void> {
+    this.ensureOpen();
     const queueNames = options?.queueNames ?? [
       this.options.defaultQueueName ?? "default",
     ];
@@ -126,6 +134,7 @@ class TBullMQBackend implements BackendAdapter {
       const existingWorker = this.workers.get(queueName);
       if (existingWorker) {
         await existingWorker.close();
+        this.ensureOpen();
       }
 
       const worker = new Worker(
@@ -256,10 +265,7 @@ class TBullMQBackend implements BackendAdapter {
   }
 
   async getQueueStats(queueName: string): Promise<QueueStats> {
-    if (this.closed) {
-      throw new Error("BullMQ backend is closed.");
-    }
-
+    this.ensureOpen();
     const queue = this.getOrCreateQueue(queueName);
     const [counts, activeJobs] = await Promise.all([
       queue.getJobCounts(

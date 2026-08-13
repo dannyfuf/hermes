@@ -36,7 +36,9 @@ export interface DenoKvBackendOptions {
 
 class TDenoKvBackend implements RecurringJobValidationBackend {
   private kv: Deno.Kv | null = null;
+  private openingKv?: Promise<Deno.Kv>;
   private path?: string;
+  private closed = false;
   private readonly inFlightHandlers = new Set<Promise<void>>();
 
   constructor(options?: DenoKvBackendOptions) {
@@ -44,10 +46,28 @@ class TDenoKvBackend implements RecurringJobValidationBackend {
   }
 
   private async getKv(): Promise<Deno.Kv> {
-    if (!this.kv) {
-      this.kv = await Deno.openKv(this.path);
-    }
-    return this.kv;
+    this.ensureOpen();
+    if (this.kv) return this.kv;
+
+    this.openingKv ??= Deno.openKv(this.path).then((kv) => {
+      if (this.closed) {
+        kv.close();
+        throw this.closedError();
+      }
+      this.kv = kv;
+      return kv;
+    }).finally(() => {
+      this.openingKv = undefined;
+    });
+    return await this.openingKv;
+  }
+
+  private ensureOpen(): void {
+    if (this.closed) throw this.closedError();
+  }
+
+  private closedError(): Error {
+    return new Error("Deno KV backend is closed.");
   }
 
   async enqueue(payload: JobPayload, options?: EnqueueOptions): Promise<void> {
@@ -115,6 +135,7 @@ class TDenoKvBackend implements RecurringJobValidationBackend {
 
   // deno-lint-ignore require-await
   async registerRecurringJob(config: RecurringJobConfig): Promise<void> {
+    this.ensureOpen();
     const payload: JobPayload = {
       jobName: config.jobName,
       queueName: config.queueName,
@@ -133,6 +154,7 @@ class TDenoKvBackend implements RecurringJobValidationBackend {
 
     const cronName = cronNameFor(config.jobName);
     const cronPromise = Deno.cron(cronName, schedule, async () => {
+      if (this.closed) return;
       await this.enqueue(payload);
     });
     cronPromise.catch((error: unknown) => {
@@ -145,10 +167,16 @@ class TDenoKvBackend implements RecurringJobValidationBackend {
   }
 
   async close(options?: { force?: boolean }): Promise<void> {
+    this.closed = true;
+
     if (!options?.force) {
       while (this.inFlightHandlers.size > 0) {
         await Promise.allSettled([...this.inFlightHandlers]);
       }
+    }
+
+    if (this.openingKv) {
+      await this.openingKv.catch(() => {});
     }
 
     if (this.kv) {

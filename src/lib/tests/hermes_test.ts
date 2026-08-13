@@ -1,6 +1,9 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { clearBackend } from "../backend_registry.ts";
-import { MockBackend } from "./helpers/mock_backend.ts";
+import {
+  DeferredListenMockBackend,
+  MockBackend,
+} from "./helpers/mock_backend.ts";
 import type {
   BackendAdapter,
   QueueStats,
@@ -92,6 +95,22 @@ class NeverSettlingRecurringBackend extends MockBackend {
     await super.registerRecurringJob(config);
     this.resolveRegistrationStarted();
     await new Promise(() => {});
+  }
+}
+
+class RejectingLateCloseBackend extends DeferredListenMockBackend {
+  private forceCloseCalls = 0;
+
+  override close(options?: { force?: boolean }): Promise<void> {
+    if (options?.force) {
+      this.forceCloseCalls += 1;
+      if (this.forceCloseCalls === 2) {
+        return super.close(options).then(() => {
+          throw new Error("late listener cleanup failed");
+        });
+      }
+    }
+    return super.close(options);
   }
 }
 
@@ -540,7 +559,94 @@ Deno.test("Hermes", async (t) => {
 
       await Promise.all([startPromise, stopPromise]);
       assertEquals(backend.isListening, false);
-      assertEquals(backend.closeOptions, [undefined]);
+      assertEquals(backend.closeOptions, [{ force: true }, undefined]);
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "a recurring registration that settles after stop is closed again",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new DeferredRecurringBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/recurring_manifest.ts",
+        backend,
+        worker: { gracefulShutdownTimeout: 10 },
+      });
+
+      const startPromise = hermes.start();
+      await backend.registrationStarted;
+      await hermes.stop();
+      assertEquals(backend.closeOptions, [{ force: true }]);
+
+      backend.releaseRegistration();
+      await startPromise;
+
+      assertEquals(backend.isListening, false);
+      assertEquals(backend.closeOptions, [
+        { force: true },
+        { force: true },
+      ]);
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "a slow listen that resolves after stop cannot resurrect the backend",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new DeferredListenMockBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+        backend,
+        worker: { gracefulShutdownTimeout: 10 },
+      });
+
+      const startPromise = hermes.start();
+      await backend.listenStarted;
+      await hermes.stop();
+
+      assertEquals(backend.isListening, false);
+      assertEquals(backend.closeOptions, [{ force: true }]);
+
+      backend.releaseListen();
+      await startPromise;
+
+      assertEquals(backend.isListening, false);
+      assertEquals(backend.closeOptions, [
+        { force: true },
+        { force: true },
+      ]);
+      clearBackend();
+    },
+  );
+
+  await t.step(
+    "a late-listener cleanup rejection is exposed through start()",
+    async () => {
+      clearBackend();
+      const { Hermes } = await import("../hermes.ts");
+      const backend = new RejectingLateCloseBackend();
+      const hermes = Hermes({
+        manifest: "./src/lib/tests/helpers/fixtures/valid_manifest.ts",
+        backend,
+        worker: { gracefulShutdownTimeout: 10 },
+      });
+
+      const startPromise = hermes.start();
+      await backend.listenStarted;
+      await hermes.stop();
+      backend.releaseListen();
+
+      await assertRejects(
+        () => startPromise,
+        Error,
+        "late listener cleanup failed",
+      );
+      assertEquals(backend.isListening, false);
       clearBackend();
     },
   );

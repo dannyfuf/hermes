@@ -51,6 +51,56 @@ Deno.test({
 });
 
 Deno.test({
+  name: "BullMQBackend: all connection-creating operations reject after close",
+  async fn() {
+    const { BullMQBackend } = await import("../../backends/bullmq.ts");
+    const backend = BullMQBackend({
+      connection: { host: "localhost", port: 6379 },
+    });
+    const backendState = backend as typeof backend & {
+      queues: Map<string, unknown>;
+      workers: Map<string, unknown>;
+    };
+
+    await backend.close({ force: true });
+
+    await assertRejects(
+      () =>
+        backend.enqueue({
+          jobName: "closed_enqueue",
+          queueName: "closed_queue",
+          jobBody: null,
+        }),
+      Error,
+      "BullMQ backend is closed.",
+    );
+    await assertRejects(
+      () =>
+        backend.registerRecurringJob!({
+          jobName: "closed_recurring",
+          queueName: "closed_queue",
+          every: "1m",
+        }),
+      Error,
+      "BullMQ backend is closed.",
+    );
+    await assertRejects(
+      () => backend.getQueueStats!("closed_queue"),
+      Error,
+      "BullMQ backend is closed.",
+    );
+    await assertRejects(
+      () => backend.listen(() => Promise.resolve()),
+      Error,
+      "BullMQ backend is closed.",
+    );
+
+    assertEquals(backendState.queues.size, 0);
+    assertEquals(backendState.workers.size, 0);
+  },
+});
+
+Deno.test({
   name: "BullMQBackend: enqueue and process a job",
   ignore: !redisAvailable,
   sanitizeOps: false,
